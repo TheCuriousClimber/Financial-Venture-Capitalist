@@ -1,0 +1,4 @@
+# The daemon itself has ZERO third-party dependencies (stdlib only: sqlite3, json, urllib, time).
+# These are optional and only needed for the cost-gated Claude bridge and .env convenience.
+anthropic>=1.4.0
+python-dotenv>=1.0

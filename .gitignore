@@ -1,0 +1,12 @@
+# secrets & local state
+trading_engine/.env
+*.db
+*.db-journal
+*.sqlite
+patches/
+logs/
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
