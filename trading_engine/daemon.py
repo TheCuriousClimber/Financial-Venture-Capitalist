@@ -127,6 +127,8 @@ class Daemon:
             if not hist or b.ts > hist[-1].ts:
                 hist.append(b)
                 new_bar = True
+                if len(hist) > config.MAX_HISTORY_BARS:
+                    del hist[: len(hist) - config.MAX_HISTORY_BARS]
         if new_bar:
             self.bar_index += 1
         # live feeds: wall clock drives the trading day; synthetic: the bar timestamp does

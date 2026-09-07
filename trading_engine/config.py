@@ -233,6 +233,7 @@ STRATEGY_PARAM_BOUNDS: Dict[str, tuple] = {
 # --------------------------------------------------------------------------------------
 POLL_INTERVAL_SECONDS: int = env_int("POLL_INTERVAL_SECONDS", 300)
 BAR_SECONDS: int = 24 * 3600                         # strategy operates on daily bars
+MAX_HISTORY_BARS: int = 400                          # enough for slow_sma<=200 and the 120-bar vol z-score
 WEEKLY_REVIEW_INTERVAL_SECONDS: int = 7 * 24 * 3600  # scheduled strategy evaluation
 REGIME_TRIGGER_MIN_INTERVAL_SECONDS: int = 3 * 24 * 3600
 SELF_HEAL_MIN_INTERVAL_SECONDS: int = 6 * 3600
