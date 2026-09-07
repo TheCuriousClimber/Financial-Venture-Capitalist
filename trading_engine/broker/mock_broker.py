@@ -21,9 +21,11 @@ class MockBroker(Broker):
 
     def __init__(self, feed: Feed, starting_cash: float = config.CAPITAL_BASE_CAD,
                  fee_schedule: Optional[config.FeeSchedule] = None, seed: int = 7,
-                 reject_prob: float = 0.0):
+                 reject_prob: float = 0.0, enforce_venue_minimums: bool = True):
         super().__init__(fee_schedule or config.FEE_TABLES[config.DEFAULT_FEE_TABLE])
         self.feed = feed
+        # Paper-soak realism: if the feed knows the venue's order minimums (KrakenFeed), enforce them.
+        self.enforce_venue_minimums = enforce_venue_minimums and hasattr(feed, "min_qty")
         self.cash = float(starting_cash)
         self.positions: Dict[str, Position] = {}
         self.rng = random.Random(seed)
@@ -34,6 +36,15 @@ class MockBroker(Broker):
     # ---- market data
     def get_quote(self, symbol: str) -> Quote:
         return self.feed.quote(symbol)
+
+    def min_qty(self, symbol: str) -> float:
+        if not self.enforce_venue_minimums:
+            return 0.0
+        try:
+            return float(self.feed.min_qty(symbol))  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - network hiccup must not break paper trading
+            asset = config.ASSETS.get(symbol)
+            return asset.ordermin_fallback if asset else 0.0
 
     # ---- account
     def get_cash(self) -> float:
@@ -70,9 +81,11 @@ class MockBroker(Broker):
         if self.reject_prob and self.rng.random() < self.reject_prob:
             raise BrokerError("simulated broker rejection")
         q = quote or self.get_quote(order.symbol)
-        qty = self.round_qty(order.qty)
+        qty = self.round_qty(order.qty, order.symbol)
         if qty <= 0:
             raise BrokerError("qty rounds to zero for this broker's lot rules")
+        if order.side == "BUY" and qty < self.min_qty(order.symbol):
+            raise BrokerError(f"volume {qty} below venue minimum {self.min_qty(order.symbol)} for {order.symbol}")
 
         ref = q.ask if order.side == "BUY" else q.bid
         notional_est = qty * ref

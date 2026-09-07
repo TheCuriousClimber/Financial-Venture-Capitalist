@@ -5,6 +5,8 @@
 * YahooChartFeed - free daily bars via Yahoo Finance's public chart endpoint (stdlib urllib only).
   No API key, no LLM. Intended for paper trading against real prices; a live broker would
   normally supply quotes itself.
+* KrakenFeed - Kraken public OHLC (daily) + Ticker for CAD pairs. Keyless, zero-token. Also exposes the
+  exchange's per-pair order minimums so paper mode rejects the same orders the live venue would.
 """
 from __future__ import annotations
 
@@ -12,6 +14,8 @@ import json
 import math
 import random
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -104,6 +108,10 @@ class SyntheticFeed(Feed):
         half = last * config.ASSETS[symbol].typical_spread_bps / 1e4 / 2
         return Quote(symbol, bid=last - half, ask=last + half, last=last, ts=self.ts)
 
+    def min_qty(self, symbol: str) -> float:
+        """Mirror the venue's published order minimum so offline crypto runs reject what Kraken would."""
+        return config.ASSETS[symbol].ordermin_fallback
+
 
 class YahooChartFeed(Feed):
     """Daily bars from Yahoo Finance chart API. Free, keyless, zero-token. Cache per calendar day."""
@@ -162,9 +170,120 @@ class YahooChartFeed(Feed):
         return Quote(symbol, bid=last - half, ask=last + half, last=last, ts=bars[-1].ts)
 
 
+class KrakenFeed(Feed):
+    """Daily bars + live quotes from Kraken's public REST API. Only completed daily candles feed the strategy;
+    the in-progress candle is excluded so signals are not recomputed on a moving bar."""
+
+    API = "https://api.kraken.com/0/public"
+
+    def __init__(self, symbols: Optional[List[str]] = None, timeout: float = 10.0, opener=None,
+                 refresh_seconds: int = 300):
+        self.symbols = list(symbols or [a.symbol for a in config.CRYPTO_WATCHLIST])
+        self.timeout = timeout
+        self._open = opener or urllib.request.urlopen
+        self.refresh_seconds = refresh_seconds
+        self._hist: Dict[str, List[Bar]] = {}
+        self._hist_ts: Dict[str, float] = {}
+        self._quotes: Dict[str, Quote] = {}
+        self._quotes_ts: float = 0.0
+        self.pair_rules: Dict[str, Dict[str, float]] = {}
+        self.bar_seconds = config.BAR_SECONDS
+
+    # ---- http
+    def _get(self, method: str, params: Dict[str, str]) -> Dict:
+        url = f"{self.API}/{method}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "trading-engine/0.1"})
+        with self._open(req, timeout=self.timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        if payload.get("error"):
+            raise RuntimeError("kraken: " + "; ".join(payload["error"]))
+        return payload["result"]
+
+    @staticmethod
+    def _asset(symbol: str) -> config.Asset:
+        return config.ASSETS[symbol]
+
+    def _match(self, key: str) -> Optional[config.Asset]:
+        for a in config.CRYPTO_WATCHLIST:
+            if key in (a.exchange_pair, f"{a.base_asset}ZCAD", f"{a.base_asset}CAD"):
+                return a
+        return None
+
+    # ---- pair rules (order minimums)
+    def load_pair_rules(self) -> Dict[str, Dict[str, float]]:
+        for s in self.symbols:
+            a = self._asset(s)
+            self.pair_rules[s] = {"ordermin": a.ordermin_fallback, "lot_decimals": a.lot_decimals, "costmin": 1.0}
+        try:
+            res = self._get("AssetPairs", {"pair": ",".join(self._asset(s).exchange_pair for s in self.symbols)})
+        except (RuntimeError, urllib.error.URLError, OSError, KeyError, ValueError):
+            return self.pair_rules
+        for _k, info in res.items():
+            a = self._match(info.get("altname", ""))
+            if a and a.symbol in self.pair_rules:
+                self.pair_rules[a.symbol] = {"ordermin": float(info.get("ordermin", a.ordermin_fallback)),
+                                             "lot_decimals": int(info.get("lot_decimals", a.lot_decimals)),
+                                             "costmin": float(info.get("costmin", 1.0) or 1.0)}
+        return self.pair_rules
+
+    def min_qty(self, symbol: str) -> float:
+        if not self.pair_rules:
+            self.load_pair_rules()
+        return float(self.pair_rules.get(symbol, {}).get("ordermin", self._asset(symbol).ordermin_fallback))
+
+    # ---- bars
+    @staticmethod
+    def parse_ohlc(symbol: str, rows: List[List]) -> List[Bar]:
+        bars: List[Bar] = []
+        for r in rows:
+            # [time, open, high, low, close, vwap, volume, count]
+            bars.append(Bar(symbol, float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[6])))
+        return bars
+
+    def _refresh_history(self, symbol: str) -> None:
+        now = time.time()
+        if symbol in self._hist and now - self._hist_ts.get(symbol, 0) < self.refresh_seconds:
+            return
+        res = self._get("OHLC", {"pair": self._asset(symbol).exchange_pair, "interval": "1440"})
+        rows = next(v for k, v in res.items() if k != "last")
+        bars = self.parse_ohlc(symbol, rows)
+        self._hist[symbol] = bars[:-1] if len(bars) > 1 else bars     # drop the in-progress candle
+        self._hist_ts[symbol] = now
+
+    def history(self, symbol: str) -> List[Bar]:
+        self._refresh_history(symbol)
+        return list(self._hist[symbol])
+
+    def next_bars(self) -> Dict[str, Bar]:
+        out: Dict[str, Bar] = {}
+        for s in self.symbols:
+            self._refresh_history(s)
+            if self._hist[s]:
+                out[s] = self._hist[s][-1]
+        return out
+
+    # ---- quotes
+    def _refresh_quotes(self) -> None:
+        pairs = ",".join(self._asset(s).exchange_pair for s in self.symbols)
+        res = self._get("Ticker", {"pair": pairs})
+        now = time.time()
+        for key, t in res.items():
+            a = self._match(key)
+            if a is not None:
+                self._quotes[a.symbol] = Quote(a.symbol, float(t["b"][0]), float(t["a"][0]), float(t["c"][0]), now)
+        self._quotes_ts = now
+
+    def quote(self, symbol: str) -> Quote:
+        if symbol not in self._quotes or time.time() - self._quotes_ts > 1.0:
+            self._refresh_quotes()
+        return self._quotes[symbol]
+
+
 def make_feed(kind: str = config.DATA_FEED, **kwargs) -> Feed:
     if kind == "synthetic":
         return SyntheticFeed(**kwargs)
     if kind == "yahoo":
         return YahooChartFeed(**kwargs)
+    if kind == "kraken_live":
+        return KrakenFeed(**kwargs)
     raise ValueError(f"unknown DATA_FEED {kind}")

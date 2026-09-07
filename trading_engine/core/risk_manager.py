@@ -90,7 +90,8 @@ class RiskManager:
 
     def evaluate(self, intent: OrderIntent, quote: Quote, equity: float, cash: float,
                  positions: Dict[str, Position], round_trip_cost_bps: float, cycle: int,
-                 supports_fractional: bool) -> RiskDecision:
+                 supports_fractional: bool, min_qty: float = 0.0) -> RiskDecision:
+        """``cycle`` must be a BAR index (not a poll counter) so cooldowns are measured in bars."""
         checks: Dict[str, str] = {}
         asset = config.ASSETS.get(intent.symbol)
         if asset is None:
@@ -144,8 +145,9 @@ class RiskManager:
         if notional < self.limits.min_order_notional_cad:
             return RiskDecision(False, reason=f"notional {notional:.2f} below minimum", checks=checks)
 
-        if round_trip_cost_bps > self.limits.max_round_trip_cost_bps:
-            return RiskDecision(False, reason=f"round-trip cost {round_trip_cost_bps:.1f}bps exceeds cap", checks=checks)
+        cost_cap = self.limits.cost_cap_bps(asset.asset_class)
+        if round_trip_cost_bps > cost_cap:
+            return RiskDecision(False, reason=f"round-trip cost {round_trip_cost_bps:.1f}bps exceeds {cost_cap:.0f}bps cap", checks=checks)
         if intent.expected_edge_bps <= 0 or round_trip_cost_bps / intent.expected_edge_bps > self.limits.max_cost_to_edge_ratio:
             return RiskDecision(False, reason=f"fees {round_trip_cost_bps:.1f}bps vs edge {intent.expected_edge_bps:.1f}bps fails ratio gate",
                                 checks=checks)
@@ -156,7 +158,10 @@ class RiskManager:
             qty = float(int(qty))
             if qty < 1:
                 return RiskDecision(False, reason="whole-share broker: cap below one share", checks=checks)
-        qty = round(qty, 4)
+        qty = round(qty, 8 if asset.asset_class == "crypto" else 4)
+        if min_qty and qty < min_qty:
+            return RiskDecision(False, reason=f"qty {qty} below venue minimum {min_qty} (cap {cap:.2f} CAD too small for {intent.symbol})",
+                                checks=checks)
         final_notional = qty * price
         if final_notional > cap + 1e-6:
             return RiskDecision(False, reason="rounding pushed notional over cap", checks=checks)

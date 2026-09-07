@@ -19,15 +19,17 @@ trading_engine/
   ledger.py                SQLite: trades, equity, token spend, realized PnL, 90/10 split, events, state
   broker/base.py           Broker / Order / Fill / Position / Quote abstractions + shared cost model
   broker/mock_broker.py    paper broker: spread, slippage, commission, FX fee modelling, avg-cost PnL
-  broker/live_broker.py    Questrade-shaped CAD adapter (urllib only) behind LIVE_TRADING_ENABLED
+  broker/live_broker.py    KrakenBroker: CAD spot pairs, HMAC-SHA512 auth (stdlib), no withdrawal capability
+  broker/questrade_broker.py  reference-only fixed-commission adapter (non-viable at $5 trades)
+  notifications.py         stdlib webhook dispatcher (Discord / Telegram / generic JSON) for sweeps + alerts
   core/indicators.py       SMA/EMA/RSI/ATR/momentum/realized vol/vol z-score (pure Python)
   core/risk_manager.py     5% per-position cap, 3% daily drawdown halt, no leverage/shorts, fee-vs-edge gate
   core/strategy.py         trend + RSI pullback entries, ATR trailing stops, regime detector
   bridge/agent_trigger.py  the ONLY module that can spend credits; every call is gated and metered
-  data/feed.py             SyntheticFeed (seeded GBM) and YahooChartFeed (free daily bars)
+  data/feed.py             SyntheticFeed (seeded GBM), YahooChartFeed, KrakenFeed (public OHLC/Ticker + order minimums)
   daemon.py                zero-cost polling loop (time.sleep), self-healing, profit sweeps
   dry_run.py               100-cycle proof: $0 tokens, 5% gate, drawdown gate, 90/10 reconciliation
-  tests/                   27 unit tests (python -m unittest discover -s trading_engine/tests)
+  tests/                   47 unit tests (python -m unittest discover -s trading_engine/tests)
 ```
 
 No third-party packages are required to run the daemon or the tests. `anthropic` is imported lazily
@@ -36,11 +38,43 @@ only when the bridge actually fires.
 ## Quick start
 
 ```bash
-python3 -m unittest discover -s trading_engine/tests          # 27 tests
+python3 -m unittest discover -s trading_engine/tests          # 47 tests
 python3 -m trading_engine.dry_run --cycles 100 --verbose       # mock broker, synthetic feed, hard assertions
 python3 -m trading_engine.daemon --cycles 100 --fast           # same loop via the daemon CLI
 python3 -m trading_engine.daemon                               # 24/7: polls every POLL_INTERVAL_SECONDS
+ASSET_UNIVERSE=crypto python3 -m trading_engine.dry_run        # offline crypto universe with Kraken minimums
 ```
+
+## Going live: Kraken CAD pairs
+
+Fixed-commission Canadian equity brokers ($1.00-$4.95 per trade) consume 20-99% of a $5 trade, so the
+production venue is Kraken spot with percentage fees (tier-0: 0.25% maker / 0.40% taker, about 2c per side
+on $5). `broker/live_broker.py` talks to Kraken's REST API with `urllib`, `hmac` and `hashlib` only.
+
+**Three-stage rollout, all controlled from `trading_engine/.env`:**
+
+| Stage | Settings | What executes |
+|---|---|---|
+| 1. Offline dry run | `DATA_FEED=synthetic` `BROKER=mock` | mock fills on synthetic bars |
+| 2. Paper soak (48h) | `ASSET_UNIVERSE=crypto` `DATA_FEED=kraken_live` `PAPER_LIVE_FEED=true` | mock fills at Kraken's **live bid/ask**, `PAPER_FEE_BPS` (0.25%) fee, Kraken order minimums enforced |
+| 3. Live | `BROKER=kraken` `PAPER_LIVE_FEED=false` `LIVE_TRADING_ENABLED=true` + keys | real market orders |
+
+`PAPER_LIVE_FEED=true` overrides `BROKER=kraken`, so a mis-set flag can only ever paper trade.
+`python -m trading_engine.daemon` refuses to start when `config.validate()` finds a problem.
+
+**API key scope.** Create the Kraken key with *Query Funds* and *Create & Modify Orders* only. The adapter
+has no withdrawal method, refuses every `Withdraw*` / `WalletTransfer` / deposit endpoint in code, and only
+calls an explicit allow-list. Profit sweeps are therefore booked in the ledger as *pending manual transfer*
+and announced on the webhook; you move the 90% to your bank from the Kraken UI.
+
+**Order minimums vs. the 5% cap.** Kraken enforces a minimum volume per pair. At recent prices BTC/CAD
+(0.00005 BTC ≈ $7) and ETH/CAD (0.002 ETH ≈ $9) sit *above* a $5 position, so the risk gate rejects them
+before any order is sent; SOL/CAD clears comfortably and ADA/DOGE are marginal. Minimums are refreshed from
+`/0/public/AssetPairs` at startup and mirrored into paper mode.
+
+**Webhook.** Set `WEBHOOK_URL` (Discord webhook, Telegram `sendMessage` URL + `TELEGRAM_CHAT_ID`, or any
+HTTPS JSON endpoint). Every `reconcile_90_10_split()` sweep posts the realized profit, the 10% compute
+reserve retained and the 90% segregated for withdrawal; drawdown halts and safe-mode entries also alert.
 
 ## Safety model
 
@@ -50,8 +84,9 @@ python3 -m trading_engine.daemon                               # 24/7: polls eve
   slippage cannot push a fill over the cap. Cash-only, long-only, whitelisted CAD ETFs only.
 * **Drawdown:** day-start equity is the prior close. Breaching -3% flattens everything and blocks new
   entries until the next day.
-* **Fees:** every entry must pass `round_trip_cost_bps < 40% of expected edge` and `< 60 bps` absolute.
-  This is what rejects Questrade/IBKR-style commissions on $5 trades (≈9,900 bps round trip).
+* **Fees:** every entry must pass `round_trip_cost_bps < 40% of expected edge` and an absolute cap of
+  60 bps (equities) / 120 bps (crypto, where 2 × taker + spread ≈ 70-90 bps). This is what rejects
+  Questrade/IBKR-style commissions on $5 trades (≈9,900 bps round trip).
 * **Profit split:** realized profit above principal is swept in ≥ $0.10 lots as 90% owner disbursement
   / 10% operational reserve, rounded to cents. The reserve extends the compute credit pool.
 * **Bridge gating:** enabled flag, API key, credit floor ($5), per-call cap ($1.50), 25%-of-remaining cap,
@@ -59,14 +94,17 @@ python3 -m trading_engine.daemon                               # 24/7: polls eve
 * **Self-heal:** after 3 consecutive tick failures the daemon enters safe mode (no new entries) and
   asks Claude (cost-gated) for a diagnosis. Any proposed diff is written to `patches/` for human review;
   `AUTO_APPLY_PATCHES` is hard-coded `False`.
-* **Live trading:** `LiveBroker.submit_order` refuses unless `LIVE_TRADING_ENABLED=true`. Real
-  credentials go in `trading_engine/.env`, which is git-ignored.
+* **Live trading:** `KrakenBroker.submit_order` refuses unless `LIVE_TRADING_ENABLED=true`, and
+  `PAPER_LIVE_FEED=true` forces the mock broker regardless. Credentials live in the git-ignored `.env`.
 
 ## Honest caveats
 
-* With $100 and a 5% cap, positions are ~$5. Only a commission-free broker with fractional shares
-  (Wealthsimple-style) makes this viable; Questrade's public API is read-only for retail order
-  placement, so `live_broker.py` is a documented adapter shape, not a turnkey path to live fills.
+* With $100 and a 5% cap, positions are ~$5. Percentage-fee venues (Kraken) or commission-free
+  fractional equity brokers are the only viable execution paths; Questrade's adapter is kept for reference.
+* Kraken's public API was unreachable from the build sandbox, so the live adapter is verified against the
+  documented signature test vector and fixture responses, not against the exchange. Run the paper soak first.
+* Crypto at 50-100% annualised vol with a 3% daily halt means a single bad day on 15% gross exposure can
+  trip the halt; that is the intended behaviour, not a bug.
 * Expected absolute returns are cents per trade. Over 12 seeds × 100 cycles the mock P&L ranged
   roughly −$1.07 to +$1.53 including swept profit — the system is a capital-preservation and
   process-correctness proof at this scale, not an income source.

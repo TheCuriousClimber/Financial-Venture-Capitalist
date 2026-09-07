@@ -138,7 +138,12 @@ class Broker(abc.ABC):
         fx = 0.0 if (asset is None or asset.currency == "CAD") else 2 * self.fees.fx_conversion_bps
         return variable + fixed_bps + fx
 
-    def round_qty(self, qty: float) -> float:
+    def round_qty(self, qty: float, symbol: Optional[str] = None) -> float:
         if self.supports_fractional:
-            return round(qty, 4)
+            return round(qty, 8 if symbol and config.ASSETS.get(symbol, None) and
+                         config.ASSETS[symbol].asset_class == "crypto" else 4)
         return float(int(qty))
+
+    def min_qty(self, symbol: str) -> float:
+        """Venue minimum order volume (0 when the venue has none). Risk gate rejects smaller orders."""
+        return 0.0
