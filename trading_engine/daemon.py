@@ -69,7 +69,10 @@ class Daemon:
         self._stop = False
         self.fills: List[Fill] = []
         self.rejections: List[str] = []
-        self._live_feed = type(feed).__name__ != "SyntheticFeed"
+        # Synthetic feeds (and subclasses such as the backtester's RegimeFeed) carry their own clock in the
+        # bar timestamps; live feeds use wall-clock time. Never test by class name.
+        from .data.feed import SyntheticFeed as _Synthetic
+        self._live_feed = not isinstance(feed, _Synthetic)
         self.last_equity: Optional[float] = None
         last = ledger.equity_curve(limit=1)
         if last:

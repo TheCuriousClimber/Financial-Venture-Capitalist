@@ -306,6 +306,20 @@ class TestDaemonSafety(unittest.TestCase):
         self.assertEqual(d.ledger.credit_spent_cad(), 0.0)          # bridge disabled -> $0
         self.assertTrue(d.ledger.events("safe_mode"))
 
+    def test_synthetic_subclass_rolls_days_by_bar_timestamp(self):
+        """Regression: a SyntheticFeed subclass must advance the trading day per bar, so the per-day trade
+        cap and the drawdown anchor reset every bar instead of freezing on one wall-clock day."""
+        class MyFeed(SyntheticFeed):
+            pass
+        d = make_daemon(MyFeed(seed=1, history_bars=60))
+        self.assertFalse(d._live_feed)
+        keys = set()
+        for _ in range(5):
+            d.tick()
+            keys.add(d.risk.day_key)
+        self.assertEqual(len(keys), 5)
+        self.assertEqual(d.risk.trades_today, d.ledger.trades_today(d.risk.day_start_ts))
+
     def test_dead_feed_at_startup_does_not_crash(self):
         d = make_daemon(DeadAtStartupFeed(seed=1, history_bars=60))       # constructor must survive
         self.assertTrue(d.ledger.events("feed_error"))
