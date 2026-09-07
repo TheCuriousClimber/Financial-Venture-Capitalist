@@ -47,7 +47,7 @@ class QuestradeBroker(Broker):
         if not self.refresh_token:
             raise BrokerError("QUESTRADE_REFRESH_TOKEN missing")
         qs = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": self.refresh_token})
-        req = urllib.request.Request(f"{LOGIN_URL}?{qs}", method="POST")
+        req = urllib.request.Request(f"{LOGIN_URL}?{qs}", method="POST", headers={"User-Agent": config.USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode())
@@ -66,6 +66,7 @@ class QuestradeBroker(Broker):
         req = urllib.request.Request(url, data=payload, method=method, headers={
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
+            "User-Agent": config.USER_AGENT,
         })
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:

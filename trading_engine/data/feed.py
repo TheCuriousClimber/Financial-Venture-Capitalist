@@ -118,19 +118,24 @@ class YahooChartFeed(Feed):
 
     URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range}&interval=1d"
 
-    def __init__(self, symbols: Optional[List[str]] = None, lookback: str = "1y", timeout: float = 10.0):
+    def __init__(self, symbols: Optional[List[str]] = None, lookback: str = "1y", timeout: float = config.HTTP_TIMEOUT_SECONDS,
+                 symbol_map: Optional[Dict[str, str]] = None, opener=None, drop_in_progress: bool = False):
         self.symbols = list(symbols or config.SYMBOLS)
         self.lookback = lookback
         self.timeout = timeout
+        self.symbol_map = symbol_map or {}          # our symbol -> Yahoo ticker (e.g. BTC/CAD -> BTC-CAD)
+        self._open = opener or urllib.request.urlopen
+        self.drop_in_progress = drop_in_progress     # crypto trades 24/7: today's candle is never complete
         self._hist: Dict[str, List[Bar]] = {}
         self._fetched_day: Dict[str, str] = {}
+        self._latest: Dict[str, Bar] = {}            # newest bar incl. the in-progress one (for quotes)
 
     def _fetch(self, symbol: str) -> List[Bar]:
         req = urllib.request.Request(
-            self.URL.format(symbol=symbol, range=self.lookback),
-            headers={"User-Agent": "Mozilla/5.0 (trading-engine; local daemon)"},
+            self.URL.format(symbol=urllib.parse.quote(self.symbol_map.get(symbol, symbol)), range=self.lookback),
+            headers={"User-Agent": config.USER_AGENT, "Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        with self._open(req, timeout=self.timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         result = payload["chart"]["result"][0]
         ts = result["timestamp"]
@@ -142,6 +147,10 @@ class YahooChartFeed(Feed):
                 continue
             bars.append(Bar(symbol, float(t), q["open"][i] or c, q["high"][i] or c, q["low"][i] or c, c,
                             float(q["volume"][i] or 0)))
+        if bars:
+            self._latest[symbol] = bars[-1]
+        if self.drop_in_progress and len(bars) > 1 and time.time() - bars[-1].ts < 86400:
+            bars = bars[:-1]
         return bars
 
     def _refresh(self, symbol: str) -> None:
@@ -164,10 +173,11 @@ class YahooChartFeed(Feed):
         return out
 
     def quote(self, symbol: str) -> Quote:
-        bars = self.history(symbol)
-        last = bars[-1].close
+        self.history(symbol)                          # ensures a fresh fetch for today
+        latest = self._latest[symbol]
+        last = latest.close
         half = last * config.ASSETS[symbol].typical_spread_bps / 1e4 / 2
-        return Quote(symbol, bid=last - half, ask=last + half, last=last, ts=bars[-1].ts)
+        return Quote(symbol, bid=last - half, ask=last + half, last=last, ts=latest.ts)
 
 
 class KrakenFeed(Feed):
@@ -176,12 +186,19 @@ class KrakenFeed(Feed):
 
     API = "https://api.kraken.com/0/public"
 
-    def __init__(self, symbols: Optional[List[str]] = None, timeout: float = 10.0, opener=None,
-                 refresh_seconds: int = 300):
+    def __init__(self, symbols: Optional[List[str]] = None, timeout: float = config.HTTP_TIMEOUT_SECONDS, opener=None,
+                 refresh_seconds: int = 300, allow_yahoo_fallback: bool = True, on_source_change=None):
         self.symbols = list(symbols or [a.symbol for a in config.CRYPTO_WATCHLIST])
         self.timeout = timeout
         self._open = opener or urllib.request.urlopen
         self.refresh_seconds = refresh_seconds
+        # Fallback: if Kraken's public API is unreachable (firewall / Cloudflare), pull candles from Yahoo
+        # (BTC-CAD, ETH-CAD, SOL-CAD ...). Kraken fee tables and order minimums still apply via config.
+        self.allow_yahoo_fallback = allow_yahoo_fallback
+        self.source = "kraken"
+        self.on_source_change = on_source_change
+        self._yahoo = YahooChartFeed(symbols=self.symbols, symbol_map={s: s.replace("/", "-") for s in self.symbols},
+                                     timeout=timeout, opener=self._open, drop_in_progress=True)
         self._hist: Dict[str, List[Bar]] = {}
         self._hist_ts: Dict[str, float] = {}
         self._quotes: Dict[str, Quote] = {}
@@ -190,14 +207,22 @@ class KrakenFeed(Feed):
         self.bar_seconds = config.BAR_SECONDS
 
     # ---- http
+    NET_ERRORS = (urllib.error.URLError, OSError, RuntimeError, KeyError, ValueError, StopIteration)
+
     def _get(self, method: str, params: Dict[str, str]) -> Dict:
         url = f"{self.API}/{method}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "trading-engine/0.1"})
+        req = urllib.request.Request(url, headers={"User-Agent": config.USER_AGENT, "Accept": "application/json"})
         with self._open(req, timeout=self.timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         if payload.get("error"):
             raise RuntimeError("kraken: " + "; ".join(payload["error"]))
         return payload["result"]
+
+    def _set_source(self, source: str, reason: str = "") -> None:
+        if source != self.source:
+            self.source = source
+            if self.on_source_change:
+                self.on_source_change(source, reason)
 
     @staticmethod
     def _asset(symbol: str) -> config.Asset:
@@ -244,10 +269,17 @@ class KrakenFeed(Feed):
         now = time.time()
         if symbol in self._hist and now - self._hist_ts.get(symbol, 0) < self.refresh_seconds:
             return
-        res = self._get("OHLC", {"pair": self._asset(symbol).exchange_pair, "interval": "1440"})
-        rows = next(v for k, v in res.items() if k != "last")
-        bars = self.parse_ohlc(symbol, rows)
-        self._hist[symbol] = bars[:-1] if len(bars) > 1 else bars     # drop the in-progress candle
+        try:
+            res = self._get("OHLC", {"pair": self._asset(symbol).exchange_pair, "interval": "1440"})
+            rows = next(v for k, v in res.items() if k != "last")
+            bars = self.parse_ohlc(symbol, rows)
+            self._hist[symbol] = bars[:-1] if len(bars) > 1 else bars     # drop the in-progress candle
+            self._set_source("kraken", "kraken reachable")
+        except self.NET_ERRORS as e:
+            if not self.allow_yahoo_fallback:
+                raise
+            self._hist[symbol] = self._yahoo.history(symbol)              # raises if Yahoo is down too
+            self._set_source("yahoo", f"kraken unreachable: {e}")
         self._hist_ts[symbol] = now
 
     def history(self, symbol: str) -> List[Bar]:
@@ -265,12 +297,21 @@ class KrakenFeed(Feed):
     # ---- quotes
     def _refresh_quotes(self) -> None:
         pairs = ",".join(self._asset(s).exchange_pair for s in self.symbols)
-        res = self._get("Ticker", {"pair": pairs})
         now = time.time()
-        for key, t in res.items():
-            a = self._match(key)
-            if a is not None:
-                self._quotes[a.symbol] = Quote(a.symbol, float(t["b"][0]), float(t["a"][0]), float(t["c"][0]), now)
+        try:
+            res = self._get("Ticker", {"pair": pairs})
+            for key, t in res.items():
+                a = self._match(key)
+                if a is not None:
+                    self._quotes[a.symbol] = Quote(a.symbol, float(t["b"][0]), float(t["a"][0]), float(t["c"][0]), now)
+            self._set_source("kraken", "kraken reachable")
+        except self.NET_ERRORS as e:
+            if not self.allow_yahoo_fallback:
+                raise
+            # Yahoo has no order book: quote = last price +/- half the pair's typical Kraken spread
+            for s in self.symbols:
+                self._quotes[s] = self._yahoo.quote(s)
+            self._set_source("yahoo", f"kraken unreachable: {e}")
         self._quotes_ts = now
 
     def quote(self, symbol: str) -> Quote:

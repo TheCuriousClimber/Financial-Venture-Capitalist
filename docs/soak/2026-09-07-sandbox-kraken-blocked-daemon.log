@@ -1,0 +1,19 @@
+2026-09-07 04:20:08,136 WARNING trading_engine.daemon: history unavailable for BTC/CAD at startup: <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:08,653 WARNING trading_engine.daemon: history unavailable for ETH/CAD at startup: <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:09,230 WARNING trading_engine.daemon: history unavailable for SOL/CAD at startup: <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:09,741 WARNING trading_engine.daemon: history unavailable for XRP/CAD at startup: <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:10,309 WARNING trading_engine.daemon: history unavailable for ADA/CAD at startup: <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:10,841 WARNING trading_engine.daemon: history unavailable for DOGE/CAD at startup: <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:10,844 INFO trading_engine.daemon: mode=paper_soak broker=mock feed=KrakenFeed universe=crypto fee_table=kraken_paper
+2026-09-07 04:20:11,384 ERROR trading_engine.daemon: tick failed (1 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:15,908 ERROR trading_engine.daemon: tick failed (2 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:20,292 ERROR trading_engine.daemon: tick failed (3 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:24,663 ERROR trading_engine.daemon: tick failed (4 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:29,318 ERROR trading_engine.daemon: tick failed (5 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:33,951 ERROR trading_engine.daemon: tick failed (6 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:38,466 ERROR trading_engine.daemon: tick failed (7 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:42,972 ERROR trading_engine.daemon: tick failed (8 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:47,509 ERROR trading_engine.daemon: tick failed (9 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:52,201 ERROR trading_engine.daemon: tick failed (10 consecutive): <urlopen error Tunnel connection failed: 403 Forbidden>
+2026-09-07 04:20:53,827 INFO trading_engine.daemon: signal 15 received; stopping after current tick
+{'principal_cad': 100.0, 'trades': 0, 'realized_pnl_net_cad': 0.0, 'swept_total_cad': 0.0, 'owner_disbursement_cad': 0.0, 'operational_reserve_cad': 0.0, 'trading_equity_cad': 100.0, 'credit_budget_cad': 100.0, 'credit_spent_cad': 0.0, 'credit_remaining_cad': 100.0, 'tokens': {'input': 0, 'output': 0, 'cache_read': 0, 'calls': 0}}

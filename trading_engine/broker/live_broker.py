@@ -73,7 +73,7 @@ class KrakenBroker(Broker):
 
     def __init__(self, api_key: Optional[str] = None, private_key: Optional[str] = None,
                  enabled: bool = config.LIVE_TRADING_ENABLED, fee_schedule: Optional[config.FeeSchedule] = None,
-                 timeout: float = 15.0, opener: Optional[Callable] = None, fill_poll_seconds: float = 10.0,
+                 timeout: float = config.HTTP_TIMEOUT_SECONDS, opener: Optional[Callable] = None, fill_poll_seconds: float = 10.0,
                  cost_basis_store: Optional[Any] = None):
         super().__init__(fee_schedule or config.FEE_TABLES["kraken"])
         self.api_key = api_key if api_key is not None else config.KRAKEN_API_KEY
@@ -94,7 +94,7 @@ class KrakenBroker(Broker):
 
     # ------------------------------------------------------------------ http
     def _http(self, url: str, data: Optional[bytes], headers: Dict[str, str]) -> Dict[str, Any]:
-        req = urllib.request.Request(url, data=data, headers={"User-Agent": "trading-engine/0.1", **headers},
+        req = urllib.request.Request(url, data=data, headers={"User-Agent": config.USER_AGENT, "Accept": "application/json", **headers},
                                      method="POST" if data is not None else "GET")
         try:
             with self._open(req, timeout=self.timeout) as resp:

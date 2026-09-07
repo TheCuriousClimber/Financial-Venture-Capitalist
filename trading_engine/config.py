@@ -256,6 +256,13 @@ CLAUDE_CREDIT_FLOOR_CAD: float = 5.00              # never spend below this rese
 CLAUDE_BRIDGE_ENABLED: bool = env_bool("CLAUDE_BRIDGE_ENABLED", False)
 
 # --------------------------------------------------------------------------------------
+# HTTP: Cloudflare-fronted APIs (Kraken, Yahoo) reject Python's default User-Agent with 403.
+# Every urllib request in this package sends USER_AGENT and a bounded timeout.
+# --------------------------------------------------------------------------------------
+USER_AGENT: str = env("HTTP_USER_AGENT", "AutonomousQuantTrading/1.0 (Macintosh; Intel Mac OS X 10_15_7)")
+HTTP_TIMEOUT_SECONDS: float = env_float("HTTP_TIMEOUT_SECONDS", 10.0)
+
+# --------------------------------------------------------------------------------------
 # Runtime
 # --------------------------------------------------------------------------------------
 BROKER: str = env("BROKER", "mock")                       # mock | kraken

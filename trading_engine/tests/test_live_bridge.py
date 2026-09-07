@@ -187,6 +187,41 @@ class TestKrakenFeed(unittest.TestCase):
         self.assertEqual(len(calls), n)
 
 
+    def test_falls_back_to_yahoo_when_kraken_blocked(self):
+        calls: List[dict] = []
+        changes: List[tuple] = []
+        now = int(__import__("time").time())
+        ts = [now - 86400 * (5 - i) for i in range(6)]          # last bar is "today" -> dropped as in-progress
+
+        def _open(req, timeout=None):
+            calls.append(req.full_url)
+            self.assertEqual(req.get_header("User-agent"), config.USER_AGENT)
+            self.assertIsNotNone(timeout)
+            if "api.kraken.com" in req.full_url:
+                raise urllib.error.URLError("Tunnel connection failed: 403 Forbidden")
+            if "finance.yahoo.com" in req.full_url and "BTC-CAD" in req.full_url:
+                closes = [100000 + i * 500 for i in range(6)]
+                return FakeResponse(json.dumps({"chart": {"result": [{"timestamp": ts, "indicators": {"quote": [{
+                    "open": closes, "high": [c + 100 for c in closes], "low": [c - 100 for c in closes],
+                    "close": closes, "volume": [1] * 6}]}}]}}).encode())
+            raise AssertionError(req.full_url)
+
+        feed = KrakenFeed(symbols=["BTC/CAD"], opener=_open, on_source_change=lambda s, r: changes.append((s, r)))
+        hist = feed.history("BTC/CAD")
+        self.assertEqual(feed.source, "yahoo")
+        self.assertEqual(len(hist), 5)                                   # in-progress day dropped
+        self.assertEqual(hist[-1].close, 102000)
+        q = feed.quote("BTC/CAD")
+        self.assertAlmostEqual(q.last, 102500)                           # Yahoo's latest print
+        self.assertAlmostEqual(q.spread_bps, config.ASSETS["BTC/CAD"].typical_spread_bps, places=6)
+        self.assertEqual(feed.min_qty("BTC/CAD"), 0.00005)              # Kraken minimum still enforced
+        self.assertTrue(changes and changes[0][0] == "yahoo")
+        self.assertTrue(any("BTC-CAD" in u for u in calls))
+        strict = KrakenFeed(symbols=["BTC/CAD"], opener=_open, allow_yahoo_fallback=False)
+        with self.assertRaises(urllib.error.URLError):
+            strict.history("BTC/CAD")
+
+
 # ------------------------------------------------------------------- webhook
 class TestWebhookNotifier(unittest.TestCase):
     def capture(self, url, chat_id="", fail=False):

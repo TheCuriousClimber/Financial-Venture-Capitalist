@@ -39,9 +39,9 @@ class Check:
     data: Dict[str, Any] = field(default_factory=dict)
 
 
-def _get(method: str, params: Optional[Dict[str, str]] = None, timeout: float = 10.0) -> Dict[str, Any]:
+def _get(method: str, params: Optional[Dict[str, str]] = None, timeout: float = config.HTTP_TIMEOUT_SECONDS) -> Dict[str, Any]:
     url = f"{KRAKEN_PUBLIC}/{method}" + (f"?{urllib.parse.urlencode(params)}" if params else "")
-    req = urllib.request.Request(url, headers={"User-Agent": "trading-engine-diagnostics/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": config.USER_AGENT, "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     if payload.get("error"):
@@ -81,9 +81,12 @@ def check_tickers(symbols: List[str]) -> Check:
     try:
         res = _get("Ticker", {"pair": pairs})
     except (urllib.error.URLError, OSError, RuntimeError, KeyError, ValueError) as e:
+        yahoo = _yahoo_fallback_quotes(symbols)
+        if yahoo:
+            return Check("live_tickers", "WARN", f"Kraken ticker unavailable ({e}); Yahoo last price with config spread estimate", yahoo)
         est = {s: {"bid": None, "ask": None, "spread_bps": config.ASSETS[s].typical_spread_bps, "source": "config_estimate"}
                for s in symbols}
-        return Check("live_tickers", "FAIL", f"ticker unavailable ({e}); using config spread estimates", est)
+        return Check("live_tickers", "FAIL", f"ticker unavailable ({e}); Yahoo fallback also unreachable; using config spread estimates", est)
     rows: Dict[str, Any] = {}
     for key, t in res.items():
         a = _match(key)
@@ -97,6 +100,21 @@ def check_tickers(symbols: List[str]) -> Check:
     missing = [s for s in symbols if s not in rows]
     status = "PASS" if not missing else "WARN"
     return Check("live_tickers", status, f"{len(rows)}/{len(symbols)} pairs quoted" + (f"; missing {missing}" if missing else ""), rows)
+
+
+def _yahoo_fallback_quotes(symbols: List[str]) -> Dict[str, Any]:
+    from .data.feed import YahooChartFeed
+    feed = YahooChartFeed(symbols=symbols, symbol_map={s: s.replace("/", "-") for s in symbols}, lookback="5d")
+    out: Dict[str, Any] = {}
+    for s in symbols:
+        try:
+            q = feed.quote(s)
+        except (urllib.error.URLError, OSError, RuntimeError, KeyError, ValueError, IndexError):
+            continue
+        mid = q.mid
+        out[s] = {"bid": q.bid, "ask": q.ask, "last": q.last, "spread_bps": round((q.ask - q.bid) / mid * 1e4, 2),
+                  "spread_pct": round((q.ask - q.bid) / mid * 100, 4), "source": "yahoo_last+config_spread"}
+    return out
 
 
 # ------------------------------------------------------------------ c. minimums math

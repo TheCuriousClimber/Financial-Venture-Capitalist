@@ -5,6 +5,8 @@ trading_engine/.env
 *.sqlite
 patches/
 logs/
+daemon.log
+nohup.out
 # python
 __pycache__/
 *.pyc

@@ -50,7 +50,7 @@ class WebhookNotifier:
             return False
         payload = json.dumps(self.build_payload(title, text, data), default=str).encode()
         req = urllib.request.Request(self.url, data=payload, method="POST",
-                                     headers={"Content-Type": "application/json", "User-Agent": "trading-engine/0.1"})
+                                     headers={"Content-Type": "application/json", "User-Agent": config.USER_AGENT})
         try:
             with self._open(req, timeout=self.timeout) as resp:
                 status = getattr(resp, "status", 200)

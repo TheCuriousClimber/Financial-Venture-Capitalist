@@ -49,7 +49,15 @@ class Daemon:
         self.agent = agent
         self.poll_interval = poll_interval
         self.symbols: List[str] = list(feed.symbols)
-        self.history: Dict[str, List[Bar]] = {s: feed.history(s) for s in self.symbols}
+        # A dead feed at startup must not be fatal: start with empty history and let ticks fail into safe mode.
+        self.history: Dict[str, List[Bar]] = {}
+        for s in self.symbols:
+            try:
+                self.history[s] = feed.history(s)
+            except Exception as e:  # noqa: BLE001
+                self.history[s] = []
+                log.warning("history unavailable for %s at startup: %s", s, e)
+                ledger.log_event("WARN", "feed_error", f"startup history unavailable for {s}: {e}"[:300])
         self.cycle = int(ledger.get_state("cycle", "0") or 0)
         self.bar_index = int(ledger.get_state("bar_index", "0") or 0)   # increments only on a NEW bar
         self.now: float = 0.0
@@ -299,7 +307,15 @@ def build(broker_kind: str = config.BROKER, feed_kind: str = config.DATA_FEED, l
       * kraken_live + BROKER=kraken + LIVE_TRADING_ENABLED -> real orders (requires PAPER_LIVE_FEED=false)
     """
     ledger = Ledger(ledger_path)
-    feed = make_feed(feed_kind, seed=seed) if feed_kind == "synthetic" else make_feed(feed_kind)
+    if feed_kind == "synthetic":
+        feed = make_feed(feed_kind, seed=seed)
+    elif feed_kind == "kraken_live":
+        def _on_source(source, reason):
+            ledger.log_event("WARN" if source != "kraken" else "INFO", "feed_source", f"market data source -> {source}: {reason}")
+            log.warning("market data source -> %s (%s)", source, reason)
+        feed = make_feed(feed_kind, on_source_change=_on_source)
+    else:
+        feed = make_feed(feed_kind)
     mode = "dry_run"
     if broker_kind == "kraken" and paper_live_feed:
         ledger.log_event("WARN", "paper_override", "PAPER_LIVE_FEED=true: BROKER=kraken ignored, routing to MockBroker")

@@ -259,6 +259,27 @@ class BrokenFeed(SyntheticFeed):
         return super().next_bars()
 
 
+class DeadAtStartupFeed(SyntheticFeed):
+    """Simulates a feed whose network is down from the very first call (e.g. firewalled Kraken + Yahoo)."""
+    def __init__(self, **kw):
+        self.armed = False
+        super().__init__(**kw)
+        self.armed = True
+
+    def history(self, symbol):
+        if self.armed:
+            raise OSError("Tunnel connection failed: 403 Forbidden")
+        return super().history(symbol)
+
+    def next_bars(self):
+        if self.armed:
+            raise OSError("Tunnel connection failed: 403 Forbidden")
+        return super().next_bars()
+
+    def quote(self, symbol):
+        raise OSError("Tunnel connection failed: 403 Forbidden")
+
+
 def make_daemon(feed, ledger=None):
     ledger = ledger or Ledger(":memory:")
     broker = MockBroker(feed, starting_cash=100.0, seed=1)
@@ -284,6 +305,14 @@ class TestDaemonSafety(unittest.TestCase):
         self.assertTrue(d.safe_mode)
         self.assertEqual(d.ledger.credit_spent_cad(), 0.0)          # bridge disabled -> $0
         self.assertTrue(d.ledger.events("safe_mode"))
+
+    def test_dead_feed_at_startup_does_not_crash(self):
+        d = make_daemon(DeadAtStartupFeed(seed=1, history_bars=60))       # constructor must survive
+        self.assertTrue(d.ledger.events("feed_error"))
+        d.run(max_cycles=config.SELF_HEAL_CONSECUTIVE_ERRORS + 1, sleep_seconds=0)
+        self.assertTrue(d.safe_mode)
+        self.assertEqual(d.ledger.credit_spent_cad(), 0.0)
+        self.assertEqual(d.broker.get_positions(), {})
 
     def test_hundred_cycle_dry_run_invariants(self):
         for seed in (42, 7):

@@ -1,0 +1,3 @@
+2026-09-07 04:21:04,061 INFO trading_engine.daemon: mode=dry_run broker=mock feed=SyntheticFeed universe=crypto fee_table=kraken_paper
+2026-09-07 04:21:04,067 INFO trading_engine.daemon: cycle 2 BUY BTC/CAD qty=0.0001 @ 131813.3448 notional=9.95 cost=0.0398 pnl=0.0000 (trend+pullback mom=16.11% rsi=64)
+{'principal_cad': 100.0, 'trades': 1, 'realized_pnl_net_cad': -0.04, 'swept_total_cad': 0.0, 'owner_disbursement_cad': 0.0, 'operational_reserve_cad': 0.0, 'trading_equity_cad': 100.09, 'credit_budget_cad': 100.0, 'credit_spent_cad': 0.0, 'credit_remaining_cad': 100.0, 'tokens': {'input': 0, 'output': 0, 'cache_read': 0, 'calls': 0}}
