@@ -1,9 +1,11 @@
 """Cost-gated bridge to Claude. The ONLY module allowed to spend compute credits.
 
 Invocation reasons (and nothing else):
-  * weekly_review  - scheduled strategy evaluation
-  * regime_shift   - realized-vol anomaly detected locally
-  * self_heal      - N consecutive unhandled exceptions in the daemon loop
+  * monthly_review   - scheduled strategy evaluation (30 days; ~$0.18/call => ~$2.16/yr)
+  * circuit_breaker  - the 3% daily drawdown kill-switch tripped (emergency, at most daily)
+  * feed_outage      - N consecutive market-data failures (emergency, at most daily)
+  * self_heal        - N consecutive non-network exceptions in the daemon loop
+Volatility regime shifts are handled locally by the strategy's cash gate and never call the model.
 
 Gates, all evaluated locally before any network call:
   1. bridge enabled + API key present (else the call is logged as skipped at $0)
@@ -25,10 +27,12 @@ from .. import config
 from ..ledger import Ledger
 
 MIN_INTERVAL: Dict[str, int] = {
-    "weekly_review": config.WEEKLY_REVIEW_INTERVAL_SECONDS - 3600,
-    "regime_shift": config.REGIME_TRIGGER_MIN_INTERVAL_SECONDS,
+    "monthly_review": config.SCHEDULED_REVIEW_INTERVAL_SECONDS - 3600,
+    "circuit_breaker": config.EMERGENCY_TRIGGER_MIN_INTERVAL_SECONDS,
+    "feed_outage": config.EMERGENCY_TRIGGER_MIN_INTERVAL_SECONDS,
     "self_heal": config.SELF_HEAL_MIN_INTERVAL_SECONDS,
 }
+SCHEDULED_REASONS = frozenset({"monthly_review"})
 
 SYSTEM_PROMPT = (
     "You are the strategy reviewer for a fully automated micro-account trading daemon "
@@ -91,6 +95,10 @@ class AgentTrigger:
         last = self.ledger.last_token_call_ts(reason)
         if last is not None and time.time() - last < MIN_INTERVAL[reason]:
             return False, f"{reason} called {int(time.time() - last)}s ago (< {MIN_INTERVAL[reason]}s)"
+        if reason in SCHEDULED_REASONS:
+            spent = self.ledger.credit_spent_since(time.time() - 365 * 86400)
+            if spent >= config.CLAUDE_SCHEDULED_ANNUAL_CAP_CAD:
+                return False, f"trailing-365d spend {spent:.2f} CAD at annual cap {config.CLAUDE_SCHEDULED_ANNUAL_CAP_CAD:.2f}"
         return True, "ok"
 
     # ------------------------------------------------------------ invocation
@@ -128,7 +136,7 @@ class AgentTrigger:
             import anthropic  # imported lazily: the daemon must run without the SDK installed
             client = anthropic.Anthropic(api_key=self.api_key, max_retries=1, timeout=300.0)
             self._client = client
-        effort = "medium" if reason == "self_heal" else "low"
+        effort = "medium" if reason in ("self_heal", "feed_outage") else "low"
         response = client.beta.messages.create(
             model=self.model,
             max_tokens=config.CLAUDE_MAX_OUTPUT_TOKENS,

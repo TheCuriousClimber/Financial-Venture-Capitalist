@@ -73,9 +73,56 @@ class TestHarness(unittest.TestCase):
             self.assertAlmostEqual(r.reserve / (r.owner + r.reserve), config.OPERATIONAL_SURPLUS_PCT, delta=0.02)
 
     def test_black_swan_triggers_kill_switch_when_exposed(self):
-        # at least one seed with a position on the shock day must record a drawdown halt
-        halts = sum(run_one(("black_swan", s, 240, CRYPTO_PARAMS)).dd_halts for s in range(1, 7))
+        # gate off so the strategy is exposed; at least one seed with a position on the shock day must halt
+        params = {**CRYPTO_PARAMS, "regime_gate": 0}
+        halts = sum(run_one(("black_swan", s, 240, params)).dd_halts for s in range(1, 9))
         self.assertGreaterEqual(halts, 1)
+
+
+class TestCashGate(unittest.TestCase):
+    def history(self, regime: str, seed: int = 3, days: int = 200):
+        feed = RegimeFeed(REGIMES[regime], seed, history_bars=150)
+        for _ in range(days):
+            feed.next_bars()
+        return {s: feed.history(s) for s in feed.symbols}
+
+    def test_bear_basket_forces_cash(self):
+        from trading_engine.core.strategy import TrendPullbackStrategy
+        from trading_engine.broker.base import Position
+        strat = TrendPullbackStrategy(); strat.p.update(CRYPTO_PARAMS)
+        hist = self.history("bear")
+        gate = strat.evaluate_gate(hist)
+        self.assertFalse(gate.entries_allowed)
+        self.assertTrue(gate.force_exit, gate.reasons)
+        held = {"SOL/CAD": Position("SOL/CAD", 0.05, 100.0)}
+        sigs = strat.generate(hist, held, 100.0, 10.0)
+        self.assertEqual([x.action for x in sigs], ["EXIT"])
+        self.assertIn("macro bear", sigs[0].reason)
+
+    def test_bull_basket_opens_gate(self):
+        from trading_engine.core.strategy import TrendPullbackStrategy
+        strat = TrendPullbackStrategy(); strat.p.update(CRYPTO_PARAMS)
+        gate = strat.evaluate_gate(self.history("bull"))
+        self.assertTrue(gate.entries_allowed, gate.reasons)
+        self.assertFalse(gate.force_exit)
+        self.assertGreater(gate.basket_mom, 0)
+
+    def test_gate_off_never_blocks(self):
+        from trading_engine.core.strategy import TrendPullbackStrategy
+        strat = TrendPullbackStrategy(); strat.p.update({**CRYPTO_PARAMS, "regime_gate": 0})
+        gate = strat.evaluate_gate(self.history("bear"))
+        self.assertTrue(gate.entries_allowed)
+        self.assertFalse(gate.force_exit)
+
+    def test_chop_filters_entries(self):
+        from trading_engine.core.strategy import TrendPullbackStrategy
+        strat = TrendPullbackStrategy(); strat.p.update(CRYPTO_PARAMS)
+        blocked = 0
+        for seed in range(1, 6):
+            hist = self.history("chop", seed=seed)
+            strat.generate(hist, {}, 100.0, 10.0)
+            blocked += len(strat.asset_filters) + (0 if strat.gate.entries_allowed else 1)
+        self.assertGreater(blocked, 0)
 
     def test_summarize_pools_profit_factor(self):
         rs = [run_one(("chop", s, 60, CRYPTO_PARAMS)) for s in (1, 2)]

@@ -21,6 +21,7 @@ import signal
 import sys
 import time
 import traceback
+import urllib.error
 from typing import Dict, List, Optional
 
 from . import config
@@ -64,8 +65,10 @@ class Daemon:
         self.consecutive_errors = 0
         self.safe_mode = False
         self.halt_new_entries = False
-        self.last_weekly_review_ts: float = float(ledger.get_state("last_weekly_review_ts", "0") or 0)
+        self.last_review_ts: float = float(ledger.get_state("last_review_ts", ledger.get_state("last_weekly_review_ts", "0")) or 0)
         self.last_regime_ts: float = float(ledger.get_state("last_regime_ts", "0") or 0)
+        self.last_gate_key: str = ""
+        self.consecutive_feed_errors = 0
         self._stop = False
         self.fills: List[Fill] = []
         self.rejections: List[str] = []
@@ -114,11 +117,12 @@ class Daemon:
         except Exception as e:  # noqa: BLE001
             self.consecutive_errors += 1
             tb = traceback.format_exc()
-            log.error("tick failed (%d consecutive): %s", self.consecutive_errors, e)
-            self.ledger.log_event("ERROR", "tick_error", str(e), {"traceback": tb[-2000:]})
+            network = isinstance(e, (OSError, urllib.error.URLError, TimeoutError, ConnectionError)) or "kraken" in str(e).lower()
+            log.error("tick failed (%d consecutive%s): %s", self.consecutive_errors, ", network" if network else "", e)
+            self.ledger.log_event("ERROR", "tick_error", str(e), {"traceback": tb[-2000:], "network": network})
             if self.consecutive_errors >= config.SELF_HEAL_CONSECUTIVE_ERRORS:
                 self.safe_mode = True
-                self._self_heal(tb)
+                self._self_heal(tb, reason="feed_outage" if network else "self_heal")
 
     # ------------------------------------------------------------------ tick
     def tick(self) -> None:
@@ -150,6 +154,9 @@ class Daemon:
                 self.ledger.log_event("WARN", "drawdown_halt", msg)
                 self._flatten(positions, quotes, equity, "daily drawdown halt")
                 self.notifier.notify_alert("daily drawdown halt", msg, {"equity": cents(equity), "cycle": self.cycle})
+                ctx = self._context(equity, self.broker.get_positions())
+                ctx["event"] = msg
+                self._apply_agent_result(self.agent.maybe_invoke("circuit_breaker", ctx))
         else:
             self._trade(quotes, positions, equity)
 
@@ -173,6 +180,13 @@ class Daemon:
     def _trade(self, quotes: Dict[str, Quote], positions: Dict[str, Position], equity: float) -> None:
         cap = self.risk.max_position_notional(equity)
         signals = self.strategy.generate(self.history, positions, equity, cap)
+        gate = self.strategy.gate
+        if gate.key() != self.last_gate_key:
+            self.last_gate_key = gate.key()
+            state = "CASH (macro bear: liquidate)" if gate.force_exit else ("no new entries" if gate.active else "open")
+            self.ledger.log_event("WARN" if gate.active else "INFO", "regime_gate", f"gate -> {state}: " + ("; ".join(gate.reasons) or "trend intact"),
+                                  {"basket": gate.basket_close, "sma": gate.basket_sma, "mom": gate.basket_mom, "vol_z": gate.basket_vol_z})
+            log.info("regime gate -> %s (%s)", state, "; ".join(gate.reasons) or "trend intact")
         # intraday stop check on live quotes (bars may be stale between closes)
         for s, p in positions.items():
             stop = self.strategy.trailing_stops.get(s)
@@ -266,6 +280,8 @@ class Daemon:
             "ledger": self.ledger.summary(equity), "equity_curve_60": [round(e, 2) for e in curve],
             "recent_trades": recent, "strategy_params": self.strategy.p,
             "rejections_recent": self.rejections[-10:], "risk_limits": vars(self.risk.limits),
+            "regime_gate": {"entries_allowed": self.strategy.gate.entries_allowed, "force_exit": self.strategy.gate.force_exit,
+                            "reasons": self.strategy.gate.reasons},
         }
 
     def _apply_agent_result(self, result: AgentResult) -> None:
@@ -280,23 +296,21 @@ class Daemon:
             self.ledger.log_event("WARN", "halt_toggle", f"halt_new_entries={self.halt_new_entries}")
 
     def _scheduled_triggers(self, equity: float, positions: Dict[str, Position]) -> None:
+        # Volatility anomalies are handled locally by the cash gate; log them, never call the model for them.
         regime = self.strategy.regime(self.history)
-        if regime.shifted and self.now - self.last_regime_ts >= config.REGIME_TRIGGER_MIN_INTERVAL_SECONDS:
+        if regime.shifted and self.now - self.last_regime_ts >= 24 * 3600:
             self.last_regime_ts = self.now
             self.ledger.set_state("last_regime_ts", self.now)
-            self.ledger.log_event("WARN", "regime_shift", "vol anomaly detected", regime.anomalies)
-            ctx = self._context(equity, positions)
-            ctx["anomalies"] = regime.anomalies
-            self._apply_agent_result(self.agent.maybe_invoke("regime_shift", ctx))
-        if self.now - self.last_weekly_review_ts >= config.WEEKLY_REVIEW_INTERVAL_SECONDS:
-            self.last_weekly_review_ts = self.now
-            self.ledger.set_state("last_weekly_review_ts", self.now)
-            self._apply_agent_result(self.agent.maybe_invoke("weekly_review", self._context(equity, positions)))
+            self.ledger.log_event("WARN", "regime_shift", "vol anomaly detected (handled by cash gate)", regime.anomalies)
+        if self.now - self.last_review_ts >= config.SCHEDULED_REVIEW_INTERVAL_SECONDS:
+            self.last_review_ts = self.now
+            self.ledger.set_state("last_review_ts", self.now)
+            self._apply_agent_result(self.agent.maybe_invoke("monthly_review", self._context(equity, positions)))
 
-    def _self_heal(self, tb: str) -> None:
+    def _self_heal(self, tb: str, reason: str = "self_heal") -> None:
         ctx = {"cycle": self.cycle, "consecutive_errors": self.consecutive_errors, "traceback": tb[-4000:],
                "ledger": self.ledger.summary()}
-        result = self.agent.maybe_invoke("self_heal", ctx)
+        result = self.agent.maybe_invoke(reason, ctx)
         msg = f"entering safe mode (no new entries); bridge invoked={result.invoked}"
         self.ledger.log_event("WARN", "safe_mode", msg)
         self.notifier.notify_alert("safe mode", msg, {"consecutive_errors": self.consecutive_errors, "cycle": self.cycle})

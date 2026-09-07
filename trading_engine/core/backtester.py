@@ -43,7 +43,7 @@ BACKTEST_FEES = config.FeeSchedule("backtest_kraken_taker", 0.0, 0.0, 40.0, 0.0,
 
 CRYPTO_SYMBOLS = [a.symbol for a in config.CRYPTO_WATCHLIST]
 # Crypto-tuned strategy params (identical to config.STRATEGY_PARAMS when ASSET_UNIVERSE=crypto)
-CRYPTO_PARAMS: Dict[str, float] = {**config.STRATEGY_PARAMS, "vol_target_annual": 0.80, "atr_stop_mult": 2.5, "regime_vol_z": 3.0}
+CRYPTO_PARAMS: Dict[str, float] = {**config.STRATEGY_PARAMS, "vol_target_annual": 0.80, "regime_vol_z": 3.0}
 
 
 @dataclass(frozen=True)

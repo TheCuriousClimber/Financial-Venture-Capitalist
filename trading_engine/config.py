@@ -194,24 +194,33 @@ DEFAULT_FEE_TABLE = "kraken_paper" if ASSET_UNIVERSE == "crypto" else "wealthsim
 # --------------------------------------------------------------------------------------
 # Strategy parameters. The agent may tune these ONLY within STRATEGY_PARAM_BOUNDS.
 # --------------------------------------------------------------------------------------
+# Slow-trend settings selected by the 2026-09-07 backtest grid (docs/backtest/2026-09-07-verdict.md).
 STRATEGY_PARAMS: Dict[str, float] = {
-    "fast_sma": 20,
-    "slow_sma": 50,
+    "fast_sma": 30,
+    "slow_sma": 100,
     "rsi_period": 14,
     "rsi_entry_min": 45.0,
-    "rsi_entry_max": 65.0,
-    "rsi_exit": 75.0,
-    "momentum_lookback": 20,
+    "rsi_entry_max": 75.0,
+    "rsi_exit": 90.0,
+    "momentum_lookback": 60,
     "atr_period": 14,
-    "atr_stop_mult": 2.0,
+    "atr_stop_mult": 3.0,
     "vol_target_annual": 0.12,      # scale position size down when realized vol is above this
-    "edge_capture": 0.25,           # fraction of trailing momentum assumed capturable (for fee gate)
-    "regime_vol_z": 2.5,            # realized-vol z-score that flags a regime shift
+    "edge_capture": 0.35,           # fraction of trailing momentum assumed capturable (for fee gate)
+    "regime_vol_z": 2.5,            # realized-vol z-score logged as a regime anomaly (local only)
+    # ---- cash gate (macro regime + volatility/chop filter). When it fires the book is 100% CAD.
+    "regime_gate": 1,               # 1 = enforce, 0 = off (backtest control)
+    "macro_sma": 100,               # equal-weight basket must be above this SMA for new entries
+    "macro_mom_lookback": 60,       # ...and have positive momentum over this many bars
+    "vol_z_max": 1.5,               # no entries while 20d realized-vol z-score (vs 100d) exceeds this
+    "momentum_min": 0.05,           # per-asset 60d momentum floor (5%): weaker trends are chop, not signal
+    "er_period": 20,                # Kaufman efficiency-ratio window
+    "er_min": 0.30,                 # below this the price is oscillating in a band without momentum
 }
 if ASSET_UNIVERSE == "crypto":
     # Crypto runs at 50-100% annualised vol; the ETF vol target would shrink a $5 cap to ~$1 and fall
     # under every Kraken order minimum. Sizing still never exceeds the 5% cap.
-    STRATEGY_PARAMS.update({"vol_target_annual": 0.80, "atr_stop_mult": 2.5, "regime_vol_z": 3.0})
+    STRATEGY_PARAMS.update({"vol_target_annual": 0.80, "regime_vol_z": 3.0})
 STRATEGY_PARAM_BOUNDS: Dict[str, tuple] = {
     "fast_sma": (5, 40),
     "slow_sma": (30, 200),
@@ -225,6 +234,13 @@ STRATEGY_PARAM_BOUNDS: Dict[str, tuple] = {
     "vol_target_annual": (0.05, 0.25) if ASSET_UNIVERSE != "crypto" else (0.20, 1.50),
     "edge_capture": (0.05, 0.5),
     "regime_vol_z": (1.5, 4.0),
+    "regime_gate": (0, 1),
+    "macro_sma": (50, 200),
+    "macro_mom_lookback": (20, 120),
+    "vol_z_max": (1.0, 3.0),
+    "momentum_min": (0.0, 0.20),
+    "er_period": (10, 40),
+    "er_min": (0.0, 0.6),
 }
 
 
@@ -234,9 +250,12 @@ STRATEGY_PARAM_BOUNDS: Dict[str, tuple] = {
 POLL_INTERVAL_SECONDS: int = env_int("POLL_INTERVAL_SECONDS", 300)
 BAR_SECONDS: int = 24 * 3600                         # strategy operates on daily bars
 MAX_HISTORY_BARS: int = 400                          # enough for slow_sma<=200 and the 120-bar vol z-score
-WEEKLY_REVIEW_INTERVAL_SECONDS: int = 7 * 24 * 3600  # scheduled strategy evaluation
-REGIME_TRIGGER_MIN_INTERVAL_SECONDS: int = 3 * 24 * 3600
+SCHEDULED_REVIEW_INTERVAL_SECONDS: int = 30 * 24 * 3600   # monthly strategy review (~$0.18/call => ~$2.16/yr)
+WEEKLY_REVIEW_INTERVAL_SECONDS = SCHEDULED_REVIEW_INTERVAL_SECONDS   # backwards-compatible alias
+EMERGENCY_TRIGGER_MIN_INTERVAL_SECONDS: int = 24 * 3600     # circuit-breaker trip / feed outage: at most daily
 SELF_HEAL_MIN_INTERVAL_SECONDS: int = 6 * 3600
+FEED_OUTAGE_CONSECUTIVE_ERRORS: int = 3
+CLAUDE_SCHEDULED_ANNUAL_CAP_CAD: float = 6.00               # scheduled reviews stop once trailing-365d spend hits this
 SELF_HEAL_CONSECUTIVE_ERRORS: int = 3
 EQUITY_SNAPSHOT_EVERY_CYCLES: int = 1
 

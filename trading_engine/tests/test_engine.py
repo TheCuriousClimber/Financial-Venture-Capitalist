@@ -6,6 +6,7 @@ import _env  # noqa: F401  pins config before trading_engine is imported
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from trading_engine import config
 from trading_engine.bridge.agent_trigger import AgentTrigger, estimate_cost_cad
@@ -47,7 +48,7 @@ class TestLedgerSplit(unittest.TestCase):
         l = Ledger(":memory:")
         l.record_split(ts=1, cycle=1, split=compute_split(1.00), equity_after=100)
         self.assertAlmostEqual(l.credit_remaining_cad(), 100.10)
-        l.record_tokens(purpose="weekly_review", model="claude-fable-5-1", input_tokens=1000, output_tokens=100,
+        l.record_tokens(purpose="monthly_review", model="claude-fable-5-1", input_tokens=1000, output_tokens=100,
                         cost_usd=0.1, cost_cad=0.137)
         self.assertAlmostEqual(l.credit_remaining_cad(), 100.10 - 0.137)
 
@@ -186,7 +187,7 @@ class FakeClient:
 class TestAgentTrigger(unittest.TestCase):
     def test_disabled_bridge_costs_nothing(self):
         l = Ledger(":memory:")
-        r = AgentTrigger(l, enabled=False).maybe_invoke("weekly_review", {})
+        r = AgentTrigger(l, enabled=False).maybe_invoke("monthly_review", {})
         self.assertFalse(r.invoked)
         self.assertEqual(l.credit_spent_cad(), 0.0)
 
@@ -195,7 +196,7 @@ class TestAgentTrigger(unittest.TestCase):
         fake = FakeClient('Looks fine.\n{"param_overrides": {"atr_stop_mult": 3.0, "max_position_pct": 0.5}, '
                           '"halt_new_entries": false, "notes": "ok"}')
         a = AgentTrigger(l, enabled=True, api_key="test", client=fake)
-        r = a.maybe_invoke("weekly_review", {"equity": 100})
+        r = a.maybe_invoke("monthly_review", {"equity": 100})
         self.assertTrue(r.invoked)
         self.assertEqual(r.param_overrides, {"atr_stop_mult": 3.0})
         self.assertAlmostEqual(r.cost_cad, estimate_cost_cad("claude-fable-5-1", 5000, 800))
@@ -204,18 +205,32 @@ class TestAgentTrigger(unittest.TestCase):
         self.assertEqual(fake.kwargs["output_config"], {"effort": "low"})
         self.assertIn("fallbacks", fake.kwargs)
         # second call within the interval is refused locally, no API hit
-        r2 = a.maybe_invoke("weekly_review", {})
+        r2 = a.maybe_invoke("monthly_review", {})
         self.assertFalse(r2.invoked)
         self.assertEqual(fake.calls, 1)
 
     def test_credit_floor_blocks_calls(self):
         l = Ledger(":memory:")
-        l.record_tokens(purpose="weekly_review", model="claude-fable-5-1", input_tokens=0, output_tokens=0,
+        l.record_tokens(purpose="monthly_review", model="claude-fable-5-1", input_tokens=0, output_tokens=0,
                         cost_usd=0, cost_cad=96.0)
         fake = FakeClient("x")
-        r = AgentTrigger(l, enabled=True, api_key="k", client=fake).maybe_invoke("regime_shift", {})
+        r = AgentTrigger(l, enabled=True, api_key="k", client=fake).maybe_invoke("circuit_breaker", {})
         self.assertFalse(r.invoked)
         self.assertIn("floor", r.skipped_because)
+        self.assertEqual(fake.calls, 0)
+
+    def test_unknown_reason_and_annual_cap(self):
+        l = Ledger(":memory:")
+        fake = FakeClient("x")
+        a = AgentTrigger(l, enabled=True, api_key="k", client=fake)
+        self.assertFalse(a.maybe_invoke("regime_shift", {}).invoked)          # no longer a bridge reason
+        self.assertFalse(a.maybe_invoke("weekly_review", {}).invoked)
+        l.record_tokens(purpose="monthly_review", model="claude-fable-5-1", input_tokens=0, output_tokens=0,
+                        cost_usd=0, cost_cad=config.CLAUDE_SCHEDULED_ANNUAL_CAP_CAD)
+        with mock.patch("trading_engine.bridge.agent_trigger.time.time", return_value=time.time() + 40 * 86400):
+            r = a.maybe_invoke("monthly_review", {})
+        self.assertFalse(r.invoked)
+        self.assertIn("annual cap", r.skipped_because)
         self.assertEqual(fake.calls, 0)
 
     def test_api_error_is_contained(self):
@@ -290,6 +305,7 @@ class TestDaemonSafety(unittest.TestCase):
     def test_drawdown_halt_flattens_and_blocks(self):
         feed = CrashFeed(seed=42, history_bars=200)
         d = make_daemon(feed)
+        d.strategy.p["regime_gate"] = 0            # isolate the kill-switch from the cash gate
         d.tick()                                   # cycle 1: enters (seed 42 produces an entry)
         self.assertTrue(d.broker.get_positions())
         d.tick()                                   # cycle 2: 80% gap on a ~4.6% position -> dd > 3% -> flatten

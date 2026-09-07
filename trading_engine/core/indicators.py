@@ -145,3 +145,26 @@ def bollinger(closes: Sequence[float], period: int = 20, k: float = 2.0):
         return None
     s = stdev(closes[-period:]) or 0.0
     return m - k * s, m, m + k * s
+
+
+def efficiency_ratio(closes: Sequence[float], period: int = 20) -> Optional[float]:
+    """Kaufman efficiency ratio: net move / sum of absolute daily moves over ``period`` bars (0 = pure chop, 1 = straight line)."""
+    if len(closes) < period + 1:
+        return None
+    window = closes[-period - 1:]
+    path = sum(abs(window[i] - window[i - 1]) for i in range(1, len(window)))
+    if path <= 0:
+        return 0.0
+    return abs(window[-1] - window[0]) / path
+
+
+def basket_index(series_by_symbol: Sequence[Sequence[float]]) -> List[float]:
+    """Equal-weight index of several close series, each normalised to 1.0 at the start of the common window."""
+    n = min((len(s) for s in series_by_symbol), default=0)
+    if n == 0:
+        return []
+    out: List[float] = []
+    for i in range(-n, 0):
+        vals = [s[i] / s[-n] for s in series_by_symbol if s[-n] > 0]
+        out.append(sum(vals) / len(vals) if vals else 1.0)
+    return out

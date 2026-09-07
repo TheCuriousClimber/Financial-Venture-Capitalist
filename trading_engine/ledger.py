@@ -263,6 +263,10 @@ class Ledger:
         row = self.conn.execute("SELECT COALESCE(SUM(cost_cad),0) FROM token_expenditures").fetchone()
         return float(row[0])
 
+    def credit_spent_since(self, ts: float) -> float:
+        row = self.conn.execute("SELECT COALESCE(SUM(cost_cad),0) FROM token_expenditures WHERE ts >= ?", (ts,)).fetchone()
+        return float(row[0])
+
     def credit_budget_cad(self) -> float:
         return float(self.get_state("credit_budget_cad") or config.CREDIT_BUDGET_CAD)
 
