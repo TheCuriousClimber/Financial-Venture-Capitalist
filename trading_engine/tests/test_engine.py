@@ -193,6 +193,7 @@ class TestAgentTrigger(unittest.TestCase):
 
     def test_invocation_records_cost_and_clamps_overrides(self):
         l = Ledger(":memory:")
+        l.record_split(ts=1, cycle=1, split=compute_split(5.00), equity_after=100)   # reserve 0.50 funds the review
         fake = FakeClient('Looks fine.\n{"param_overrides": {"atr_stop_mult": 3.0, "max_position_pct": 0.5}, '
                           '"halt_new_entries": false, "notes": "ok"}')
         a = AgentTrigger(l, enabled=True, api_key="test", client=fake)
@@ -225,6 +226,7 @@ class TestAgentTrigger(unittest.TestCase):
         a = AgentTrigger(l, enabled=True, api_key="k", client=fake)
         self.assertFalse(a.maybe_invoke("regime_shift", {}).invoked)          # no longer a bridge reason
         self.assertFalse(a.maybe_invoke("weekly_review", {}).invoked)
+        l.record_split(ts=1, cycle=1, split=compute_split(200.0), equity_after=100)    # reserve 20: not the binding gate
         l.record_tokens(purpose="monthly_review", model="claude-fable-5-1", input_tokens=0, output_tokens=0,
                         cost_usd=0, cost_cad=config.CLAUDE_SCHEDULED_ANNUAL_CAP_CAD)
         with mock.patch("trading_engine.bridge.agent_trigger.time.time", return_value=time.time() + 40 * 86400):
@@ -232,6 +234,25 @@ class TestAgentTrigger(unittest.TestCase):
         self.assertFalse(r.invoked)
         self.assertIn("annual cap", r.skipped_because)
         self.assertEqual(fake.calls, 0)
+
+    def test_earned_compute_gate(self):
+        """Routine reviews spend only what the 10% reserve earned; emergencies draw on the initial pool."""
+        l = Ledger(":memory:")
+        fake = FakeClient("ok")
+        a = AgentTrigger(l, enabled=True, api_key="k", client=fake)
+        r = a.maybe_invoke("monthly_review", {})
+        self.assertFalse(r.invoked)
+        self.assertIn("earned-compute", r.skipped_because)
+        self.assertEqual(fake.calls, 0)
+        self.assertTrue(a.maybe_invoke("circuit_breaker", {}).invoked)        # exempt
+        self.assertTrue(a.maybe_invoke("feed_outage", {}).invoked)            # exempt
+        l.record_split(ts=1, cycle=1, split=compute_split(0.50), equity_after=100)   # reserve 0.05: still short
+        self.assertFalse(a.maybe_invoke("monthly_review", {}).invoked)
+        l.record_split(ts=2, cycle=2, split=compute_split(3.00), equity_after=100)   # reserve 0.35 >= ~0.11 est
+        r = a.maybe_invoke("monthly_review", {})
+        self.assertTrue(r.invoked, r.skipped_because)
+        self.assertAlmostEqual(a.reserve_balance(), 0.35 - r.cost_cad, places=6)
+        self.assertLess(l.summary()["compute_reserve_balance_cad"], 0.35)
 
     def test_api_error_is_contained(self):
         l = Ledger(":memory:")

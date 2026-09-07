@@ -263,6 +263,13 @@ class Ledger:
         row = self.conn.execute("SELECT COALESCE(SUM(cost_cad),0) FROM token_expenditures").fetchone()
         return float(row[0])
 
+    def credit_spent_for(self, purposes) -> float:
+        purposes = list(purposes)
+        if not purposes:
+            return 0.0
+        q = f"SELECT COALESCE(SUM(cost_cad),0) FROM token_expenditures WHERE purpose IN ({','.join('?' * len(purposes))})"
+        return float(self.conn.execute(q, purposes).fetchone()[0])
+
     def credit_spent_since(self, ts: float) -> float:
         row = self.conn.execute("SELECT COALESCE(SUM(cost_cad),0) FROM token_expenditures WHERE ts >= ?", (ts,)).fetchone()
         return float(row[0])
@@ -316,6 +323,7 @@ class Ledger:
             "credit_budget_cad": self.credit_budget_cad(),
             "credit_spent_cad": round(self.credit_spent_cad(), 4),
             "credit_remaining_cad": round(self.credit_remaining_cad(), 4),
+            "compute_reserve_balance_cad": round(self.reserve_total() - self.credit_spent_for(["monthly_review"]), 4),
             "tokens": tokens,
         }
 

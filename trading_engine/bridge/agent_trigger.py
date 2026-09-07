@@ -7,6 +7,10 @@ Invocation reasons (and nothing else):
   * self_heal        - N consecutive non-network exceptions in the daemon loop
 Volatility regime shifts are handled locally by the strategy's cash gate and never call the model.
 
+Earned-compute rule: a scheduled review may only spend what the 10% operational reserve has actually earned
+(reserve swept - scheduled spend so far >= estimated call cost). Emergency reasons draw on the initial credit
+pool and are exempt, so a circuit-breaker trip or feed outage is always reviewable.
+
 Gates, all evaluated locally before any network call:
   1. bridge enabled + API key present (else the call is logged as skipped at $0)
   2. credit remaining above CLAUDE_CREDIT_FLOOR_CAD
@@ -76,6 +80,10 @@ class AgentTrigger:
         self.invocations = 0
 
     # ---------------------------------------------------------------- gating
+    def reserve_balance(self) -> float:
+        """Operational reserve earned from profits minus what scheduled reviews have already spent."""
+        return self.ledger.reserve_total() - self.ledger.credit_spent_for(SCHEDULED_REASONS)
+
     def can_invoke(self, reason: str, prompt_chars: int) -> tuple:
         if reason not in MIN_INTERVAL:
             return False, f"unknown reason {reason}"
@@ -99,6 +107,10 @@ class AgentTrigger:
             spent = self.ledger.credit_spent_since(time.time() - 365 * 86400)
             if spent >= config.CLAUDE_SCHEDULED_ANNUAL_CAP_CAD:
                 return False, f"trailing-365d spend {spent:.2f} CAD at annual cap {config.CLAUDE_SCHEDULED_ANNUAL_CAP_CAD:.2f}"
+            balance = self.reserve_balance()
+            if balance < est:
+                return False, (f"earned-compute gate: reserve balance {balance:.2f} CAD < estimated call cost {est:.2f} CAD; "
+                               "routine review deferred until trading profits fund it")
         return True, "ok"
 
     # ------------------------------------------------------------ invocation

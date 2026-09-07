@@ -216,6 +216,8 @@ STRATEGY_PARAMS: Dict[str, float] = {
     "momentum_min": 0.05,           # per-asset 60d momentum floor (5%): weaker trends are chop, not signal
     "er_period": 20,                # Kaufman efficiency-ratio window
     "er_min": 0.30,                 # below this the price is oscillating in a band without momentum
+    "breakout_confirm": 0,          # 1 = entry must close above the prior donchian_period-day high (false-breakout filter)
+    "donchian_period": 20,
 }
 if ASSET_UNIVERSE == "crypto":
     # Crypto runs at 50-100% annualised vol; the ETF vol target would shrink a $5 cap to ~$1 and fall
@@ -241,6 +243,8 @@ STRATEGY_PARAM_BOUNDS: Dict[str, tuple] = {
     "momentum_min": (0.0, 0.20),
     "er_period": (10, 40),
     "er_min": (0.0, 0.6),
+    "breakout_confirm": (0, 1),
+    "donchian_period": (10, 60),
 }
 
 

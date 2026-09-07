@@ -4,7 +4,8 @@ Cash gate (evaluated first, on the equal-weight basket of the universe):
     macro bear   basket < SMA(macro_sma) AND basket momentum(macro_mom_lookback) < 0
                  -> liquidate everything, hold 100% CAD, zero turnover until it clears
     no entries   basket < SMA(macro_sma) OR basket momentum <= 0 OR basket 20d vol z-score > vol_z_max
-Per-asset entry filters: 20d vol z-score <= vol_z_max, momentum >= momentum_min, efficiency ratio >= er_min.
+Per-asset entry filters: 20d vol z-score <= vol_z_max, momentum >= momentum_min, efficiency ratio >= er_min,
+and (breakout_confirm) close above the prior donchian_period-day high so entries never start mid-range.
 Entry (long only):  close > SMA(slow) and close > SMA(fast), momentum > 0, rsi_entry_min <= RSI <= rsi_entry_max
 Exit:               close < SMA(slow)  or  RSI > rsi_exit  or  close <= trailing stop  or  macro bear
 Sizing:             vol-targeted fraction of the position cap, never above the cap.
@@ -94,7 +95,7 @@ class TrendPullbackStrategy:
     @property
     def warmup_bars(self) -> int:
         return int(max(self.p["slow_sma"], self.p["momentum_lookback"], self.p["atr_period"] + 1,
-                       self.p["rsi_period"] + 1, self.p["er_period"] + 1)) + 1
+                       self.p["rsi_period"] + 1, self.p["er_period"] + 1, self.p.get("donchian_period", 20) + 1)) + 1
 
     # ------------------------------------------------------------ cash gate
     def evaluate_gate(self, history: Dict[str, List[Bar]]) -> GateState:
@@ -130,9 +131,10 @@ class TrendPullbackStrategy:
         self.gate = g
         return g
 
-    def _asset_filter(self, closes: List[float], f: Dict[str, float]) -> Optional[str]:
+    def _asset_filter(self, bars: Sequence[Bar], f: Dict[str, float]) -> Optional[str]:
         if int(self.p.get("regime_gate", 1)) == 0:
             return None
+        closes = [b.close for b in bars]
         z = ind.rolling_vol_zscore(closes, 20, 100)
         if z is not None and z > float(self.p["vol_z_max"]):
             return f"vol z {z:.1f}"
@@ -141,6 +143,10 @@ class TrendPullbackStrategy:
         er = ind.efficiency_ratio(closes, int(self.p["er_period"]))
         if er is not None and er < float(self.p["er_min"]):
             return f"chop ER {er:.2f}"
+        if int(self.p.get("breakout_confirm", 0)):
+            upper = ind.donchian_upper([b.high for b in bars], int(self.p["donchian_period"]))
+            if upper is not None and f["close"] <= upper:
+                return f"no breakout: close {f['close']:.2f} <= {int(self.p['donchian_period'])}d high {upper:.2f}"
         return None
 
     # ------------------------------------------------------------ analytics
@@ -202,7 +208,7 @@ class TrendPullbackStrategy:
                 continue
             if close > f["slow"] and close > f["fast"] and f["mom"] > 0 \
                     and float(self.p["rsi_entry_min"]) <= f["rsi"] <= float(self.p["rsi_entry_max"]):
-                why = self._asset_filter([b.close for b in bars], f)
+                why = self._asset_filter(bars, f)
                 if why:
                     self.asset_filters[symbol] = why
                     continue

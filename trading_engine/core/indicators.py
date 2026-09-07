@@ -168,3 +168,11 @@ def basket_index(series_by_symbol: Sequence[Sequence[float]]) -> List[float]:
         vals = [s[i] / s[-n] for s in series_by_symbol if s[-n] > 0]
         out.append(sum(vals) / len(vals) if vals else 1.0)
     return out
+
+
+def donchian_upper(highs: Sequence[float], period: int = 20, exclude_last: bool = True) -> Optional[float]:
+    """Highest high of the previous ``period`` bars (excluding the current bar by default)."""
+    window = highs[-period - 1:-1] if exclude_last else highs[-period:]
+    if len(window) < period:
+        return None
+    return max(window)

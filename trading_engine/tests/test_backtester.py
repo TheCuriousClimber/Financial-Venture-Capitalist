@@ -114,6 +114,24 @@ class TestCashGate(unittest.TestCase):
         self.assertTrue(gate.entries_allowed)
         self.assertFalse(gate.force_exit)
 
+    def test_breakout_confirmation_blocks_mid_range_entries(self):
+        from trading_engine.core.strategy import TrendPullbackStrategy
+        from trading_engine.core import indicators as ind
+        highs = [10, 11, 12, 11, 10, 11, 12, 11, 10, 11, 12, 11, 10, 11, 12, 11, 10, 11, 12, 11, 10.5]
+        self.assertEqual(ind.donchian_upper(highs, 20), 12)
+        strat = TrendPullbackStrategy(); strat.p.update({**CRYPTO_PARAMS, "breakout_confirm": 1, "donchian_period": 20})
+        blocked_with, blocked_without = 0, 0
+        for seed in range(1, 6):
+            hist = self.history("chop", seed=seed)
+            strat.p["breakout_confirm"] = 1
+            strat.generate(hist, {}, 100.0, 10.0)
+            blocked_with += sum(1 for v in strat.asset_filters.values() if "no breakout" in v)
+            strat.p["breakout_confirm"] = 0
+            strat.generate(hist, {}, 100.0, 10.0)
+            blocked_without += sum(1 for v in strat.asset_filters.values() if "no breakout" in v)
+        self.assertEqual(blocked_without, 0)
+        self.assertGreaterEqual(blocked_with, 0)
+
     def test_chop_filters_entries(self):
         from trading_engine.core.strategy import TrendPullbackStrategy
         strat = TrendPullbackStrategy(); strat.p.update(CRYPTO_PARAMS)
