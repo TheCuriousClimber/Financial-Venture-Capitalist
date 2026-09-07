@@ -30,6 +30,7 @@ trading_engine/
   daemon.py                zero-cost polling loop (time.sleep), self-healing, profit sweeps
   dry_run.py               100-cycle proof: $0 tokens, position cap, drawdown gate, 90/10 reconciliation
   diagnostics.py           pre-flight: Kraken connectivity, live spreads, minimum-order math, ledger I/O
+  core/backtester.py       4-regime Monte Carlo (bull/bear/chop/black swan) through the production stack
   tests/                   47 unit tests (python -m unittest discover -s trading_engine/tests)
 ```
 
@@ -98,6 +99,13 @@ reserve retained and the 90% segregated for withdrawal; drawdown halts and safe-
   `AUTO_APPLY_PATCHES` is hard-coded `False`.
 * **Live trading:** `KrakenBroker.submit_order` refuses unless `LIVE_TRADING_ENABLED=true`, and
   `PAPER_LIVE_FEED=true` forces the mock broker regardless. Credentials live in the git-ignored `.env`.
+
+## Backtest verdict (2026-09-07)
+
+`python3 -m trading_engine.core.backtester --seeds 100` runs 365 daily cycles × 100 seeds × 4 regimes through the
+real daemon with 40 bps taker + 10 bps slippage per side. Result: the default strategy is **not** net positive
+across regimes (pooled -$1.20/yr, PF 0.92, profitable only in the bull regime). Longer lookbacks (`slow_trend`)
+reach +$2.36/yr, PF 1.06, but bear/chop still lose. Full tables and required changes: `docs/backtest/2026-09-07-verdict.md`.
 
 ## Honest caveats
 
