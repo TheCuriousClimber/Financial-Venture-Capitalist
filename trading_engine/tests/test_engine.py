@@ -1,6 +1,8 @@
 """Unit tests: risk gates, ledger split math, broker fee model, strategy bounds, bridge gating, daemon safety."""
 from __future__ import annotations
 
+import _env  # noqa: F401  pins config before trading_engine is imported
+
 import time
 import unittest
 from types import SimpleNamespace

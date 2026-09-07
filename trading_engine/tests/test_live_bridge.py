@@ -1,6 +1,8 @@
 """Tests for the Kraken adapter, Kraken feed parsing, webhook dispatcher, paper-soak routing and validation."""
 from __future__ import annotations
 
+import _env  # noqa: F401  pins config before trading_engine is imported
+
 import io
 import json
 import unittest
