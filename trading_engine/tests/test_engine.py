@@ -60,20 +60,22 @@ class TestRiskManager(unittest.TestCase):
     def eval(self, intent, equity=100.0, cash=100.0, positions=None, cost_bps=8.0, q=None):
         return self.rm.evaluate(intent, q or quote(), equity, cash, positions or {}, cost_bps, 10, True)
 
-    def test_caps_at_five_percent(self):
+    CAP = config.RISK.max_position_pct * 100.0   # $10 at a $100 principal
+
+    def test_caps_at_max_position_pct(self):
         d = self.eval(OrderIntent("XIU.TO", "BUY", 50.0, 100.0, "t"))
         self.assertTrue(d.approved)
-        self.assertLessEqual(d.notional, 5.0)
-        self.assertGreater(d.notional, 4.9)
+        self.assertLessEqual(d.notional, self.CAP)
+        self.assertGreater(d.notional, self.CAP * 0.98)
 
     def test_cap_does_not_grow_above_principal(self):
         d = self.eval(OrderIntent("XIU.TO", "BUY", 50.0, 100.0, "t"), equity=140.0, cash=140.0)
-        self.assertLessEqual(d.notional, 5.0)
+        self.assertLessEqual(d.notional, self.CAP)
 
     def test_existing_position_reduces_room(self):
-        pos = {"XIU.TO": Position("XIU.TO", 0.1, 40.0)}   # $4 held
+        pos = {"XIU.TO": Position("XIU.TO", 0.2, 40.0)}   # $8 held at a $40 mid
         d = self.eval(OrderIntent("XIU.TO", "BUY", 50.0, 100.0, "t"), positions=pos)
-        self.assertLessEqual(d.notional, 1.0 + 1e-6)
+        self.assertLessEqual(d.notional, self.CAP - 8.0 + 0.05)
 
     def test_no_short(self):
         d = self.eval(OrderIntent("XIU.TO", "SELL", 5.0, 0.0, "t"))
@@ -288,7 +290,7 @@ class TestDaemonSafety(unittest.TestCase):
             report = run_dry(cycles=100, seed=seed)
             self.assertEqual(report["failures"], [], report)
             self.assertEqual(report["token_calls"], 0)
-            self.assertLessEqual(report["max_buy_pct_of_equity"], 5.0)
+            self.assertLessEqual(report["max_buy_pct_of_equity"], config.RISK.max_position_pct * 100)
 
 
 if __name__ == "__main__":

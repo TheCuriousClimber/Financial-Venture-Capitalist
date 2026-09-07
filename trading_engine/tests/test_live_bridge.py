@@ -252,7 +252,7 @@ class TestPaperSoakAndGates(unittest.TestCase):
         b = MockBroker(feed, fee_schedule=config.FEE_TABLES["kraken_paper"])
         q = b.get_quote("SOL/CAD")
         f = b.submit_order(Order("SOL/CAD", "BUY", 5.0 / q.ask), q)
-        self.assertAlmostEqual(f.commission, 5.0 * 0.0025, places=3)
+        self.assertAlmostEqual(f.commission, 5.0 * config.PAPER_FEE_BPS / 1e4, places=3)
         self.assertLess(b.estimate_round_trip_cost_bps("SOL/CAD", 5.0, q), config.RISK.max_round_trip_cost_bps_crypto)
 
     def test_mock_enforces_venue_minimum_from_feed(self):

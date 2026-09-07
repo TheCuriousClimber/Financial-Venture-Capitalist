@@ -16,7 +16,7 @@ os.environ.update({
     "TELEGRAM_CHAT_ID": "",
     "KRAKEN_API_KEY": "",
     "KRAKEN_PRIVATE_KEY": "",
-    "PAPER_FEE_BPS": "25",
+    "PAPER_FEE_BPS": "40",
     "KRAKEN_TAKER_BPS": "40",
     "CAPITAL_BASE_CAD": "100.00",
     "CREDIT_BUDGET_CAD": "100.00",

@@ -76,10 +76,10 @@ assert abs(OPERATIONAL_SURPLUS_PCT + OWNER_DISBURSEMENT_PCT - 1.0) < 1e-9
 # --------------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class RiskLimits:
-    max_position_pct: float = 0.05          # 5% of equity per single trade / position
+    max_position_pct: float = 0.10          # 10% of equity ($10) per single trade / position; clears Kraken BTC/ETH minimums
     max_daily_drawdown_pct: float = 0.03    # hard stop: flatten and halt for the day
     max_open_positions: int = 3
-    max_gross_exposure_pct: float = 0.15    # sum of positions <= 15% equity (3 x 5%)
+    max_gross_exposure_pct: float = 0.30    # sum of positions <= 30% equity (3 x 10%)
     min_order_notional_cad: float = 1.00    # below this, fees/spread dominate
     max_cost_to_edge_ratio: float = 0.40    # round-trip cost must be < 40% of expected edge
     max_round_trip_cost_bps: float = 60.0   # absolute cap on round-trip cost (equities/ETFs)
@@ -185,8 +185,8 @@ KRAKEN_MAKER_BPS: float = env_float("KRAKEN_MAKER_BPS", 25.0)
 KRAKEN_TAKER_BPS: float = env_float("KRAKEN_TAKER_BPS", 40.0)
 # Market orders are taker orders; the live schedule therefore models the taker rate. A $5 trade pays ~2c/side.
 FEE_TABLES["kraken"] = FeeSchedule("kraken", 0.0, 0.0, KRAKEN_TAKER_BPS, 0.0, 10.0, 2.0, 2.0, 0.0, True, 1.00)
-# Paper-soak schedule: same venue, fee rate pinned by PAPER_FEE_BPS (default 0.25% per side as specified).
-PAPER_FEE_BPS: float = env_float("PAPER_FEE_BPS", 25.0)
+# Paper-soak schedule: same venue, fee rate pinned by PAPER_FEE_BPS (default 0.40% = tier-0 taker, what market orders pay).
+PAPER_FEE_BPS: float = env_float("PAPER_FEE_BPS", 40.0)
 FEE_TABLES["kraken_paper"] = FeeSchedule("kraken_paper", 0.0, 0.0, PAPER_FEE_BPS, 0.0, 10.0, 2.0, 2.0, 0.0, True, 1.00)
 DEFAULT_FEE_TABLE = "kraken_paper" if ASSET_UNIVERSE == "crypto" else "wealthsimple"
 

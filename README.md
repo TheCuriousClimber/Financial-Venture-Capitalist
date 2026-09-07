@@ -28,7 +28,8 @@ trading_engine/
   bridge/agent_trigger.py  the ONLY module that can spend credits; every call is gated and metered
   data/feed.py             SyntheticFeed (seeded GBM), YahooChartFeed, KrakenFeed (public OHLC/Ticker + order minimums)
   daemon.py                zero-cost polling loop (time.sleep), self-healing, profit sweeps
-  dry_run.py               100-cycle proof: $0 tokens, 5% gate, drawdown gate, 90/10 reconciliation
+  dry_run.py               100-cycle proof: $0 tokens, position cap, drawdown gate, 90/10 reconciliation
+  diagnostics.py           pre-flight: Kraken connectivity, live spreads, minimum-order math, ledger I/O
   tests/                   47 unit tests (python -m unittest discover -s trading_engine/tests)
 ```
 
@@ -48,15 +49,15 @@ ASSET_UNIVERSE=crypto python3 -m trading_engine.dry_run        # offline crypto 
 ## Going live: Kraken CAD pairs
 
 Fixed-commission Canadian equity brokers ($1.00-$4.95 per trade) consume 20-99% of a $5 trade, so the
-production venue is Kraken spot with percentage fees (tier-0: 0.25% maker / 0.40% taker, about 2c per side
-on $5). `broker/live_broker.py` talks to Kraken's REST API with `urllib`, `hmac` and `hashlib` only.
+production venue is Kraken spot with percentage fees (tier-0: 0.25% maker / 0.40% taker, about 4c per side
+on $10). `broker/live_broker.py` talks to Kraken's REST API with `urllib`, `hmac` and `hashlib` only.
 
 **Three-stage rollout, all controlled from `trading_engine/.env`:**
 
 | Stage | Settings | What executes |
 |---|---|---|
 | 1. Offline dry run | `DATA_FEED=synthetic` `BROKER=mock` | mock fills on synthetic bars |
-| 2. Paper soak (48h) | `ASSET_UNIVERSE=crypto` `DATA_FEED=kraken_live` `PAPER_LIVE_FEED=true` | mock fills at Kraken's **live bid/ask**, `PAPER_FEE_BPS` (0.25%) fee, Kraken order minimums enforced |
+| 2. Paper soak (48h) | `ASSET_UNIVERSE=crypto` `DATA_FEED=kraken_live` `PAPER_LIVE_FEED=true` | mock fills at Kraken's **live bid/ask**, `PAPER_FEE_BPS` (0.40% taker) fee, Kraken order minimums enforced |
 | 3. Live | `BROKER=kraken` `PAPER_LIVE_FEED=false` `LIVE_TRADING_ENABLED=true` + keys | real market orders |
 
 `PAPER_LIVE_FEED=true` overrides `BROKER=kraken`, so a mis-set flag can only ever paper trade.
@@ -67,9 +68,10 @@ has no withdrawal method, refuses every `Withdraw*` / `WalletTransfer` / deposit
 calls an explicit allow-list. Profit sweeps are therefore booked in the ledger as *pending manual transfer*
 and announced on the webhook; you move the 90% to your bank from the Kraken UI.
 
-**Order minimums vs. the 5% cap.** Kraken enforces a minimum volume per pair. At recent prices BTC/CAD
-(0.00005 BTC ≈ $7) and ETH/CAD (0.002 ETH ≈ $9) sit *above* a $5 position, so the risk gate rejects them
-before any order is sent; SOL/CAD clears comfortably and ADA/DOGE are marginal. Minimums are refreshed from
+**Order minimums vs. the 10% cap.** Kraken enforces a minimum volume per pair. At recent prices BTC/CAD
+(0.00005 BTC ≈ $7) and ETH/CAD (0.002 ETH ≈ $9) fit under a $10 position with little headroom, so a BTC rally
+above ~$200k CAD would push BTC/CAD back under the minimum and the gate would reject it. Run
+`python -m trading_engine.diagnostics` to check the live math. Minimums are refreshed from
 `/0/public/AssetPairs` at startup and mirrored into paper mode.
 
 **Webhook.** Set `WEBHOOK_URL` (Discord webhook, Telegram `sendMessage` URL + `TELEGRAM_CHAT_ID`, or any
@@ -80,8 +82,8 @@ reserve retained and the 90% segregated for withdrawal; drawdown halts and safe-
 
 * **Risk gates are owner-defined and immutable at runtime.** The agent can only tune
   `STRATEGY_PARAMS` inside `STRATEGY_PARAM_BOUNDS`; anything else in its reply is discarded.
-* **Sizing:** 5% of min(equity, principal) per position, 15% gross, 3 positions max, 0.5% haircut so
-  slippage cannot push a fill over the cap. Cash-only, long-only, whitelisted CAD ETFs only.
+* **Sizing:** 10% of min(equity, principal) per position ($10), 30% gross, 3 positions max, 0.5% haircut
+  so slippage cannot push a fill over the cap. Cash-only, long-only, whitelisted CAD instruments only.
 * **Drawdown:** day-start equity is the prior close. Breaching -3% flattens everything and blocks new
   entries until the next day.
 * **Fees:** every entry must pass `round_trip_cost_bps < 40% of expected edge` and an absolute cap of
