@@ -93,8 +93,9 @@ reserve retained and the 90% segregated for withdrawal; drawdown halts and safe-
 * **Profit split:** realized profit above principal is swept in ≥ $0.10 lots as 90% owner disbursement
   / 10% operational reserve, rounded to cents. The reserve extends the compute credit pool.
 * **Bridge gating:** enabled flag, API key, credit floor ($5), per-call cap ($1.50), 25%-of-remaining cap,
-  per-reason minimum interval, trailing-365-day cap on scheduled spend. Scheduled review is monthly (~$0.18 CAD
-  per call, ~$2.16/yr); intermediate calls only on a circuit-breaker trip, a feed outage, or a code exception.
+  per-reason minimum interval, trailing-365-day cap on scheduled spend, and the **earned-compute rule**: a monthly
+  review fires only if the 10% operational reserve (minus prior scheduled spend) covers the estimated call cost
+  (~$0.18 CAD). Circuit-breaker trips, feed outages and code exceptions are exempt and draw on the initial pool.
 * **Self-heal:** after 3 consecutive tick failures the daemon enters safe mode (no new entries) and
   asks Claude (cost-gated) for a diagnosis. Any proposed diff is written to `patches/` for human review;
   `AUTO_APPLY_PATCHES` is hard-coded `False`.
@@ -106,14 +107,16 @@ reserve retained and the 90% segregated for withdrawal; drawdown halts and safe-
 `python3 -m trading_engine.core.backtester --seeds 100` runs 365 daily cycles × 100 seeds × 4 regimes through the
 real daemon with 40 bps taker + 10 bps slippage per side.
 
-| | pooled net PnL mean / median | PF | max DD mean | fees/yr |
-|---|---|---|---|---|
-| original RSI/pullback defaults | -$1.20 / -$3.22 | 0.92 | -11.1% | $1.75 |
-| slow-trend + cash gate (current defaults) | **+$2.82 / -$0.85** | **1.46** | **-5.7%** | $0.48 |
+| | pooled net PnL mean / median | PF | max DD mean / worst | chop PnL | fees/yr |
+|---|---|---|---|---|---|
+| original RSI/pullback defaults | -$1.20 / -$3.22 | 0.92 | -11.1% / -27.0% | -$9.85 | $1.75 |
+| slow-trend + cash gate | +$2.82 / -$0.85 | 1.46 | -5.7% / -15.0% | -$4.84 | $0.48 |
+| + breakout confirmation (current defaults) | **+$2.24 / -$0.22** | **1.62** | **-4.3% / -11.7%** | **-$2.61** | $0.32 |
 
-The cash gate (basket below its 100d SMA with negative 60d momentum → 100% CAD) removed 69% of chop turnover and
-made the bear regime break-even; chop is still net negative (PF 0.31). Details and next steps:
-`docs/backtest/2026-09-07-gated-verdict.md` (v2) and `docs/backtest/2026-09-07-verdict.md` (v1).
+The cash gate (basket below its 100d SMA with negative 60d momentum → 100% CAD) and the Donchian breakout filter
+turned the system into a positive-expectancy, right-skewed bet on trending-up markets with bounded losses elsewhere.
+The pooled *median* under an equal-weight adverse regime mix is still slightly negative; see
+`docs/backtest/2026-09-07-final-verdict.md` (v3), `...-gated-verdict.md` (v2), `...-verdict.md` (v1).
 
 ## Honest caveats
 
