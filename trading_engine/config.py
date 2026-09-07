@@ -216,7 +216,7 @@ STRATEGY_PARAMS: Dict[str, float] = {
     "momentum_min": 0.05,           # per-asset 60d momentum floor (5%): weaker trends are chop, not signal
     "er_period": 20,                # Kaufman efficiency-ratio window
     "er_min": 0.30,                 # below this the price is oscillating in a band without momentum
-    "breakout_confirm": 0,          # 1 = entry must close above the prior donchian_period-day high (false-breakout filter)
+    "breakout_confirm": 1,          # entry must close above the prior donchian_period-day high (false-breakout filter; calibrated 2026-09-07)
     "donchian_period": 20,
 }
 if ASSET_UNIVERSE == "crypto":
