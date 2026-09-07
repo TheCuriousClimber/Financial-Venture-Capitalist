@@ -93,7 +93,8 @@ reserve retained and the 90% segregated for withdrawal; drawdown halts and safe-
 * **Profit split:** realized profit above principal is swept in ≥ $0.10 lots as 90% owner disbursement
   / 10% operational reserve, rounded to cents. The reserve extends the compute credit pool.
 * **Bridge gating:** enabled flag, API key, credit floor ($5), per-call cap ($1.50), 25%-of-remaining cap,
-  per-reason minimum interval. Estimated cost of one weekly review ≈ $0.18 CAD.
+  per-reason minimum interval, trailing-365-day cap on scheduled spend. Scheduled review is monthly (~$0.18 CAD
+  per call, ~$2.16/yr); intermediate calls only on a circuit-breaker trip, a feed outage, or a code exception.
 * **Self-heal:** after 3 consecutive tick failures the daemon enters safe mode (no new entries) and
   asks Claude (cost-gated) for a diagnosis. Any proposed diff is written to `patches/` for human review;
   `AUTO_APPLY_PATCHES` is hard-coded `False`.
@@ -103,9 +104,16 @@ reserve retained and the 90% segregated for withdrawal; drawdown halts and safe-
 ## Backtest verdict (2026-09-07)
 
 `python3 -m trading_engine.core.backtester --seeds 100` runs 365 daily cycles × 100 seeds × 4 regimes through the
-real daemon with 40 bps taker + 10 bps slippage per side. Result: the default strategy is **not** net positive
-across regimes (pooled -$1.20/yr, PF 0.92, profitable only in the bull regime). Longer lookbacks (`slow_trend`)
-reach +$2.36/yr, PF 1.06, but bear/chop still lose. Full tables and required changes: `docs/backtest/2026-09-07-verdict.md`.
+real daemon with 40 bps taker + 10 bps slippage per side.
+
+| | pooled net PnL mean / median | PF | max DD mean | fees/yr |
+|---|---|---|---|---|
+| original RSI/pullback defaults | -$1.20 / -$3.22 | 0.92 | -11.1% | $1.75 |
+| slow-trend + cash gate (current defaults) | **+$2.82 / -$0.85** | **1.46** | **-5.7%** | $0.48 |
+
+The cash gate (basket below its 100d SMA with negative 60d momentum → 100% CAD) removed 69% of chop turnover and
+made the bear regime break-even; chop is still net negative (PF 0.31). Details and next steps:
+`docs/backtest/2026-09-07-gated-verdict.md` (v2) and `docs/backtest/2026-09-07-verdict.md` (v1).
 
 ## Honest caveats
 
