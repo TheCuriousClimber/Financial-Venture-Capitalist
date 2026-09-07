@@ -11,7 +11,12 @@ One ``tick`` per polling interval:
 Exceptions in a tick never kill the loop; after N consecutive failures the self-heal trigger fires
 (cost-gated) and the daemon enters safe mode (no new entries) until ticks succeed again.
 
-Run:  python -m trading_engine.daemon [--cycles N] [--interval SECONDS] [--fast]
+Run:  python -m trading_engine.daemon [--cycles N] [--interval SECONDS] [--fast] [--once]
+
+``--once`` runs exactly one evaluation/execution pass and exits (0 = ok, 1 = the pass raised). Because the
+strategy works on daily candles, a free daily cron job calling --once is equivalent to the 24/7 loop: all
+state that matters between passes (cycle/bar counters, trailing stops, re-entry cooldowns, strategy params,
+cost basis, review timestamps) is persisted in the SQLite ledger and restored on start.
 """
 from __future__ import annotations
 
@@ -83,6 +88,11 @@ class Daemon:
         saved = ledger.get_state_json("strategy_params")
         if saved:
             strategy.update_params(saved)
+        # Restore per-process state so --once (cron) runs behave exactly like the long-running loop.
+        stops = ledger.get_state_json("trailing_stops", {}) or {}
+        strategy.trailing_stops.update({k: float(v) for k, v in stops.items()})
+        cooldowns = ledger.get_state_json("last_exit_bar", {}) or {}
+        risk.last_exit_cycle.update({k: int(v) for k, v in cooldowns.items()})
 
     # ------------------------------------------------------------------ loop
     def run(self, max_cycles: Optional[int] = None, sleep_seconds: Optional[float] = None) -> None:
@@ -171,6 +181,8 @@ class Daemon:
         self._scheduled_triggers(equity, positions)
         self.ledger.set_state("cycle", self.cycle)
         self.ledger.set_state("bar_index", self.bar_index)
+        self.ledger.set_state_json("trailing_stops", self.strategy.trailing_stops)
+        self.ledger.set_state_json("last_exit_bar", self.risk.last_exit_cycle)
 
     # --------------------------------------------------------------- helpers
     def _equity(self, quotes: Dict[str, Quote], positions: Dict[str, Position]) -> float:
@@ -369,18 +381,34 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--cycles", type=int, default=None, help="stop after N cycles (default: run forever)")
     parser.add_argument("--interval", type=float, default=None, help="seconds between cycles")
     parser.add_argument("--fast", action="store_true", help="no sleep between cycles (simulation)")
+    parser.add_argument("--once", action="store_true", help="run a single evaluation/execution pass and exit (cron mode)")
+    parser.add_argument("--log-file", default=config.env("LOG_FILE", ""), help="also append log lines to this file")
     parser.add_argument("--broker", default=config.BROKER)
     parser.add_argument("--feed", default=config.DATA_FEED)
     parser.add_argument("--ledger", default=config.LEDGER_PATH)
     args = parser.parse_args(argv)
+    handlers: List[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file))
     logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=handlers, force=True)
     problems = config.validate()
     if problems:
         for pr in problems:
             log.error("config: %s", pr)
         return 2
     d = build(args.broker, args.feed, args.ledger)
+    if args.once:
+        d.run(max_cycles=1, sleep_seconds=0)
+        try:
+            equity = d.broker.equity()
+        except Exception:  # noqa: BLE001 - feed may be down; the summary must still print
+            equity = None
+        summary = d.ledger.summary(equity)
+        log.info("once: cycle=%d fills=%d rejections=%d errors=%d tokens=%s equity=%s",
+                 d.cycle, len(d.fills), len(d.rejections), d.consecutive_errors, summary["tokens"]["calls"], summary["trading_equity_cad"])
+        print(summary)
+        return 1 if d.consecutive_errors else 0
     sleep = 0 if args.fast else args.interval
     d.run(max_cycles=args.cycles, sleep_seconds=sleep)
     print(d.ledger.summary(d.broker.equity()))

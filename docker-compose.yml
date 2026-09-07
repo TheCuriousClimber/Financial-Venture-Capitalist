@@ -1,0 +1,44 @@
+# Trading daemon with persistent state. `docker compose up -d` runs the 24/7 loop;
+# `docker compose run --rm once` runs a single --once pass (for host cron); `docker compose run --rm diagnostics`
+# checks Kraken connectivity, live spreads, order minimums and ledger I/O.
+services:
+  daemon:
+    build: .
+    image: trading-engine:local
+    container_name: trading-daemon
+    restart: unless-stopped
+    env_file:
+      - trading_engine/.env          # never baked into the image
+    environment:
+      LEDGER_PATH: /app/data/ledger.db
+      LOG_FILE: /app/data/daemon.log
+    volumes:
+      - ./data:/app/data             # ledger.db (+ -wal/-shm), daemon.log, patches/ survive restarts
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    mem_limit: 128m
+    cpus: 0.25
+
+  once:
+    image: trading-engine:local
+    profiles: ["tools"]
+    env_file:
+      - trading_engine/.env
+    environment:
+      LEDGER_PATH: /app/data/ledger.db
+      LOG_FILE: /app/data/daemon.log
+    volumes:
+      - ./data:/app/data
+    command: ["--once"]
+
+  diagnostics:
+    image: trading-engine:local
+    profiles: ["tools"]
+    env_file:
+      - trading_engine/.env
+    environment:
+      LEDGER_PATH: /app/data/ledger.db
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python3", "-m", "trading_engine.diagnostics"]

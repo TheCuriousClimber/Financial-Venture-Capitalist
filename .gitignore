@@ -7,8 +7,14 @@ trading_engine/.env
 *.sqlite
 patches/
 logs/
-daemon.log
+data/
+/daemon.log
+/*.log
+/*.pid
 nohup.out
+# scratch backtest output (curated results live in docs/backtest/)
+backtest_*.json
+backtest_*.log
 # python
 __pycache__/
 *.pyc

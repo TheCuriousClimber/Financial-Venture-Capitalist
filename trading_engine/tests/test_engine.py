@@ -365,6 +365,55 @@ class TestDaemonSafety(unittest.TestCase):
         self.assertEqual(d.ledger.credit_spent_cad(), 0.0)
         self.assertEqual(d.broker.get_positions(), {})
 
+    def test_once_flag_runs_single_cycle_and_exits_zero(self):
+        import io, os, tempfile
+        from contextlib import redirect_stdout
+        from trading_engine.daemon import main
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ledger.db")
+            for expected_cycle in (1, 2):
+                with redirect_stdout(io.StringIO()):
+                    rc = main(["--once", "--feed", "synthetic", "--broker", "mock", "--ledger", path])
+                self.assertEqual(rc, 0)
+                l = Ledger(path)
+                self.assertEqual(int(l.get_state("cycle")), expected_cycle)   # state persisted across processes
+                self.assertEqual(l.total_tokens()["calls"], 0)
+                l.close()
+
+    def test_once_flag_exit_code_on_failed_pass(self):
+        import io
+        from contextlib import redirect_stdout
+        from trading_engine import daemon as dmod
+        broken = BrokenFeed(seed=1, history_bars=60)
+        with mock.patch.object(dmod, "make_feed", return_value=broken), redirect_stdout(io.StringIO()):
+            rc = dmod.main(["--once", "--feed", "synthetic", "--broker", "mock", "--ledger", ":memory:"])
+        self.assertEqual(rc, 1)
+
+    def test_trailing_stops_and_cooldowns_survive_restart(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ledger.db")
+            l1 = Ledger(path)
+            feed = SyntheticFeed(seed=42, history_bars=200)
+            d1 = Daemon(l1, MockBroker(feed, starting_cash=100.0, seed=1), feed, TrendPullbackStrategy(), RiskManager(),
+                        AgentTrigger(l1, enabled=False), 0)
+            d1.strategy.p["regime_gate"] = 0
+            d1.strategy.trailing_stops["XIU.TO"] = 12.34
+            d1.risk.last_exit_cycle["ZAG.TO"] = 7
+            d1.tick()                      # seed 42 enters XIU.TO here, so its stop is re-set by on_entry
+            stops_after, cooldowns_after = dict(d1.strategy.trailing_stops), dict(d1.risk.last_exit_cycle)
+            self.assertTrue(stops_after)
+            self.assertNotEqual(stops_after.get("XIU.TO"), 12.34)
+            l1.close()
+            l2 = Ledger(path)
+            d2 = Daemon(l2, MockBroker(feed, starting_cash=100.0, seed=1), feed, TrendPullbackStrategy(), RiskManager(),
+                        AgentTrigger(l2, enabled=False), 0)
+            self.assertEqual(d2.strategy.trailing_stops, stops_after)
+            self.assertEqual(d2.risk.last_exit_cycle, cooldowns_after)
+            self.assertEqual(d2.risk.last_exit_cycle.get("ZAG.TO"), 7)
+            self.assertEqual(d2.cycle, 1)
+            l2.close()
+
     def test_hundred_cycle_dry_run_invariants(self):
         for seed in (42, 7):
             report = run_dry(cycles=100, seed=seed)
