@@ -17,7 +17,6 @@ COPY --chown=trader:trader trading_engine/ /app/trading_engine/
 RUN rm -f /app/trading_engine/.env /app/trading_engine/ledger.db
 
 USER trader
-VOLUME ["/app/data"]
 
 # Optional: the cost-gated Claude bridge needs the SDK. Uncomment to enable in-container:
 # RUN pip install --no-cache-dir anthropic>=1.4.0
