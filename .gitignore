@@ -7,7 +7,7 @@ trading_engine/.env
 *.sqlite
 patches/
 logs/
-data/
+/data/
 /daemon.log
 /*.log
 /*.pid
