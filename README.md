@@ -71,7 +71,8 @@ and announced on the webhook; you move the 90% to your bank from the Kraken UI.
 
 **Order minimums vs. the 10% cap.** Kraken enforces a minimum volume per pair. At recent prices BTC/CAD
 (0.00005 BTC ≈ $7) and ETH/CAD (0.002 ETH ≈ $9) fit under a $10 position with little headroom, so a BTC rally
-above ~$200k CAD would push BTC/CAD back under the minimum and the gate would reject it. Run
+above ~$200k CAD would push BTC/CAD back under the minimum and the gate would reject it. The universe is
+strictly BTC/CAD, ETH/CAD and SOL/CAD: Kraken has no CAD spot book for ADA, XRP or DOGE. Run
 `python -m trading_engine.diagnostics` to check the live math. Minimums are refreshed from
 `/0/public/AssetPairs` at startup and mirrored into paper mode.
 

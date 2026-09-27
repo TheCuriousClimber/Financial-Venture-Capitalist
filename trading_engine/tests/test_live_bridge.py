@@ -222,9 +222,14 @@ class TestKrakenFeed(unittest.TestCase):
             strict.history("BTC/CAD")
 
 
+    UNLISTED = config.Asset("ADA/CAD", "Cardano / CAD (test-only, not on Kraken)", "crypto", typical_spread_bps=20.0,
+                            ref_price=1.0, exchange_pair="ADACAD", base_asset="ADA", ordermin_fallback=5.0)
+
+    @mock.patch.dict(config.ASSETS, {"ADA/CAD": UNLISTED})
     def test_unknown_pair_does_not_break_batch_and_legacy_keys_map_back(self):
-        """Railway incident: one unlisted pair made the batched Ticker/OHLC call fail with
-        EQuery:Unknown asset pair and dropped the whole universe to Yahoo."""
+        """Railway incident: one unlisted pair (ADA/CAD) made the batched Ticker/OHLC call fail with
+        EQuery:Unknown asset pair and dropped the whole universe to Yahoo. ADA/CAD is patched in for the test;
+        the shipped universe is strictly BTC/ETH/SOL."""
         calls: List[dict] = []
         changes: List[tuple] = []
         now = int(__import__("time").time())
@@ -260,20 +265,20 @@ class TestKrakenFeed(unittest.TestCase):
                     "open": closes, "high": closes, "low": closes, "close": closes, "volume": [1] * 6}]}}]}}).encode())
             raise AssertionError(url)
 
-        feed = KrakenFeed(symbols=["BTC/CAD", "ETH/CAD", "SOL/CAD", "XRP/CAD"], opener=_open,
+        feed = KrakenFeed(symbols=["BTC/CAD", "ETH/CAD", "SOL/CAD", "ADA/CAD"], opener=_open,
                           on_source_change=lambda s, r: changes.append((s, r)))
         q = feed.quote("BTC/CAD")
         self.assertAlmostEqual(q.ask, 140010.0)                                  # XXBTZCAD key -> BTC/CAD
         self.assertAlmostEqual(feed.quote("ETH/CAD").last, 4500.0)               # XETHZCAD key -> ETH/CAD
         self.assertEqual(feed.pairs.pair("BTC/CAD"), "XBTCAD")
-        self.assertIn("XRP/CAD", feed.pairs.unavailable)
+        self.assertIn("ADA/CAD", feed.pairs.unavailable)
         self.assertEqual(feed.source, "kraken")                                   # universe stays on Kraken
-        self.assertEqual(feed.symbol_sources["XRP/CAD"], "yahoo")                  # only the unlisted pair falls back
+        self.assertEqual(feed.symbol_sources["ADA/CAD"], "yahoo")                  # only the unlisted pair falls back
         self.assertEqual(feed.symbol_sources["SOL/CAD"], "kraken")
         self.assertEqual(len(feed.history("ETH/CAD")), 5)
         self.assertEqual(feed.history("ETH/CAD")[-1].symbol, "ETH/CAD")
         self.assertEqual(feed.min_qty("SOL/CAD"), 0.02)
-        self.assertTrue(any("XRP/CAD" in r for _s, r in changes))
+        self.assertTrue(any("ADA/CAD" in r for _s, r in changes))
         self.assertEqual(sum("Ticker" in u for u in calls), 1)                    # one batched call served all quotes
 
     def test_broker_maps_legacy_keys_and_refuses_unlisted_pairs(self):
@@ -293,13 +298,15 @@ class TestKrakenFeed(unittest.TestCase):
 
         b = KrakenBroker(api_key="k", private_key="a2V5a2V5", enabled=True, opener=fake_opener(router, calls))
         rules = b.load_pair_rules()
+        self.assertEqual(sorted(rules), ["BTC/CAD", "ETH/CAD", "SOL/CAD"])         # the shipped universe, nothing else
         self.assertEqual(rules["BTC/CAD"]["source"], "exchange")
-        self.assertEqual(rules["DOGE/CAD"]["source"], "fallback")
+        self.assertEqual(rules["ETH/CAD"]["source"], "fallback")                   # router answers Unknown for ETHCAD
+        self.assertIn("ETH/CAD", b.pairs.unavailable)
         self.assertEqual(b.get_quote("BTC/CAD").bid, 139990.0)
         with self.assertRaises(BrokerError):
-            b.get_quotes(["BTC/CAD", "DOGE/CAD"])                                  # unlisted -> explicit error, no request
-        with self.assertRaises(BrokerError):
-            b.submit_order(Order("DOGE/CAD", "BUY", 50))
+            b.get_quotes(["BTC/CAD", "ETH/CAD"])                                   # unlisted -> explicit error, no request
+        with mock.patch.dict(config.ASSETS, {"ADA/CAD": self.UNLISTED}), self.assertRaises(BrokerError):
+            b.submit_order(Order("ADA/CAD", "BUY", 50))                            # outside the universe entirely
         self.assertFalse(any("AddOrder" in c["url"] for c in calls))
 
 

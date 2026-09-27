@@ -130,6 +130,8 @@ TSX_WATCHLIST: List[Asset] = WATCHLIST
 
 # Kraken CAD spot pairs: percentage fees, 24/7, fractional volume. ordermin values are Kraken's
 # published minimums (refreshed live from /0/public/AssetPairs at startup when reachable).
+# Strictly the three pairs Kraken keeps a CAD spot book for; ADA/XRP/DOGE CAD fell back to Yahoo in the
+# 2026-09 Railway soak and are excluded (aliases remain in data/kraken_pairs.py if they are ever re-added).
 CRYPTO_WATCHLIST: List[Asset] = [
     Asset("BTC/CAD", "Bitcoin / CAD", "crypto", typical_spread_bps=8.0, ref_price=140000.0, annual_drift=0.20, annual_vol=0.55,
           exchange_pair="XBTCAD", base_asset="XXBT", ordermin_fallback=0.00005, lot_decimals=8),
@@ -137,12 +139,6 @@ CRYPTO_WATCHLIST: List[Asset] = [
           exchange_pair="ETHCAD", base_asset="XETH", ordermin_fallback=0.002, lot_decimals=8),
     Asset("SOL/CAD", "Solana / CAD", "crypto", typical_spread_bps=15.0, ref_price=220.0, annual_drift=0.15, annual_vol=0.90,
           exchange_pair="SOLCAD", base_asset="SOL", ordermin_fallback=0.02, lot_decimals=8),
-    Asset("XRP/CAD", "XRP / CAD", "crypto", typical_spread_bps=15.0, ref_price=3.0, annual_drift=0.10, annual_vol=0.85,
-          exchange_pair="XRPCAD", base_asset="XXRP", ordermin_fallback=2.0, lot_decimals=8),
-    Asset("ADA/CAD", "Cardano / CAD", "crypto", typical_spread_bps=20.0, ref_price=1.0, annual_drift=0.10, annual_vol=0.90,
-          exchange_pair="ADACAD", base_asset="ADA", ordermin_fallback=5.0, lot_decimals=8),
-    Asset("DOGE/CAD", "Dogecoin / CAD", "crypto", typical_spread_bps=20.0, ref_price=0.25, annual_drift=0.05, annual_vol=1.00,
-          exchange_pair="DOGECAD", base_asset="XXDG", ordermin_fallback=20.0, lot_decimals=8),
 ]
 
 # Active universe: "tsx" (synthetic/yahoo + wealthsimple-style fees) or "crypto" (Kraken CAD pairs)
