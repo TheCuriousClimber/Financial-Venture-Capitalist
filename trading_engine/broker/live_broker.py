@@ -25,6 +25,7 @@ import urllib.request
 from typing import Any, Callable, Dict, Optional
 
 from .. import config
+from ..data.kraken_pairs import KrakenPairResolver
 from .base import Broker, BrokerError, Fill, Order, Position, Quote
 
 API_URL = "https://api.kraken.com"
@@ -89,8 +90,8 @@ class KrakenBroker(Broker):
         if self._store is not None:
             self._cost_basis = self._store.get_state_json("kraken_cost_basis", {}) or {}
         self.symbols = [a.symbol for a in config.CRYPTO_WATCHLIST]
-        self._by_pair = {a.exchange_pair: a for a in config.CRYPTO_WATCHLIST}
         self._by_base = {a.base_asset: a for a in config.CRYPTO_WATCHLIST}
+        self.pairs = KrakenPairResolver(self._public, self.symbols)
 
     # ------------------------------------------------------------------ http
     def _http(self, url: str, data: Optional[bytes], headers: Dict[str, str]) -> Dict[str, Any]:
@@ -130,26 +131,26 @@ class KrakenBroker(Broker):
 
     # ------------------------------------------------------------ pair rules
     def load_pair_rules(self) -> Dict[str, Dict[str, Any]]:
-        """Fetch ordermin / lot_decimals / costmin for the watchlist; fall back to config values."""
+        """Resolve each pair name via AssetPairs (per symbol, so one unknown pair cannot break the batch) and
+        fetch ordermin / lot_decimals / costmin; fall back to config values when the venue is unreachable."""
         for a in config.CRYPTO_WATCHLIST:
             self.pair_rules[a.symbol] = {"ordermin": a.ordermin_fallback, "lot_decimals": a.lot_decimals,
                                          "pair_decimals": 2, "costmin": 1.0, "source": "fallback"}
         try:
-            res = self._public("AssetPairs", {"pair": ",".join(a.exchange_pair for a in config.CRYPTO_WATCHLIST)})
+            self.pairs.resolve(force=True)
         except BrokerError:
             return self.pair_rules
-        for _key, info in res.items():
-            asset = self._by_pair.get(info.get("altname"))
-            if asset is None:
-                continue
-            self.pair_rules[asset.symbol] = {
-                "ordermin": float(info.get("ordermin", asset.ordermin_fallback)),
-                "lot_decimals": int(info.get("lot_decimals", asset.lot_decimals)),
-                "pair_decimals": int(info.get("pair_decimals", 2)),
-                "costmin": float(info.get("costmin", 1.0) or 1.0),
-                "source": "exchange",
-            }
+        for s, r in self.pairs.rules.items():
+            self.pair_rules[s] = dict(r)
         return self.pair_rules
+
+    def _pair(self, symbol: str) -> str:
+        if not self.pairs.resolved:
+            self.load_pair_rules()
+        pair = self.pairs.pair(symbol)
+        if pair is None:
+            raise BrokerError(f"{symbol} is not listed on Kraken ({self.pairs.unavailable.get(symbol, 'unresolved')})")
+        return pair
 
     def min_qty(self, symbol: str) -> float:
         rules = self.pair_rules.get(symbol)
@@ -164,30 +165,23 @@ class KrakenBroker(Broker):
 
     # ------------------------------------------------------------ market data
     def get_quote(self, symbol: str) -> Quote:
-        asset = config.ASSETS[symbol]
-        res = self._public("Ticker", {"pair": asset.exchange_pair})
-        tick = next(iter(res.values()))
+        res = self._public("Ticker", {"pair": self._pair(symbol)})
+        mapped = self.pairs.map_response(res)
+        tick = mapped.get(symbol) or next(iter(res.values()))
         return Quote(symbol, bid=float(tick["b"][0]), ask=float(tick["a"][0]), last=float(tick["c"][0]), ts=time.time())
 
     def get_quotes(self, symbols):
-        pairs = ",".join(config.ASSETS[s].exchange_pair for s in symbols)
-        res = self._public("Ticker", {"pair": pairs})
+        symbols = list(symbols)
+        pairs = [self._pair(s) for s in symbols]           # raises for unlisted symbols before any request
+        res = self._public("Ticker", {"pair": ",".join(pairs)})
         out: Dict[str, Quote] = {}
-        for key, tick in res.items():
-            asset = self._by_pair.get(key) or self._match_pair_key(key)
-            if asset is not None:
-                out[asset.symbol] = Quote(asset.symbol, float(tick["b"][0]), float(tick["a"][0]), float(tick["c"][0]), time.time())
+        for s, tick in self.pairs.map_response(res).items():
+            if s in symbols:
+                out[s] = Quote(s, float(tick["b"][0]), float(tick["a"][0]), float(tick["c"][0]), time.time())
         missing = [s for s in symbols if s not in out]
         if missing:
             raise BrokerError(f"ticker missing pairs {missing}: keys={list(res)}")
         return out
-
-    def _match_pair_key(self, key: str):
-        """Kraken returns legacy keys (XXBTZCAD) for some pairs; match on base asset + CAD quote."""
-        for a in config.CRYPTO_WATCHLIST:
-            if key in (a.exchange_pair, f"{a.base_asset}{KRAKEN_QUOTE_CAD}", f"{a.base_asset}CAD"):
-                return a
-        return None
 
     # ----------------------------------------------------------------- account
     def get_cash(self) -> float:
@@ -215,13 +209,12 @@ class KrakenBroker(Broker):
         asset = config.ASSETS.get(order.symbol)
         if asset is None or asset.asset_class != "crypto" or not asset.exchange_pair:
             raise BrokerError(f"{order.symbol} is not a Kraken CAD pair")
-        if not self.pair_rules:
-            self.load_pair_rules()
+        pair = self._pair(order.symbol)
         qty = self.round_qty(order.qty, order.symbol)
         if qty < self.min_qty(order.symbol):
             raise BrokerError(f"volume {qty} below Kraken ordermin {self.min_qty(order.symbol)} for {order.symbol}")
         body: Dict[str, Any] = {
-            "pair": asset.exchange_pair,
+            "pair": pair,
             "type": "buy" if order.side == "BUY" else "sell",
             "ordertype": "market" if order.order_type == "MARKET" else "limit",
             "volume": f"{qty:.{self.pair_rules.get(order.symbol, {}).get('lot_decimals', 8)}f}",

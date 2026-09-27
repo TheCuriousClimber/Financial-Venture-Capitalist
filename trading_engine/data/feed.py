@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 
 from .. import config
 from ..broker.base import Quote
+from .kraken_pairs import KrakenPairResolver
 
 TRADING_DAYS = 252
 
@@ -205,9 +206,24 @@ class KrakenFeed(Feed):
         self._quotes_ts: float = 0.0
         self.pair_rules: Dict[str, Dict[str, float]] = {}
         self.bar_seconds = config.BAR_SECONDS
+        self.pairs = KrakenPairResolver(self._get, self.symbols)
+        self.symbol_sources: Dict[str, str] = {}     # symbol -> kraken | yahoo
 
     # ---- http
     NET_ERRORS = (urllib.error.URLError, OSError, RuntimeError, KeyError, ValueError, StopIteration)
+
+    def _resolve(self) -> bool:
+        """Resolve pair names once. Returns False (and leaves the resolver unresolved) on a network error."""
+        if self.pairs.resolved:
+            return True
+        try:
+            self.pairs.resolve()
+        except self.NET_ERRORS:
+            return False
+        if self.pairs.unavailable and self.on_source_change:
+            self.on_source_change("kraken", "pairs not listed on Kraken, served by Yahoo: "
+                                  + ", ".join(f"{s} ({why})" for s, why in self.pairs.unavailable.items()))
+        return True
 
     def _get(self, method: str, params: Dict[str, str]) -> Dict:
         url = f"{self.API}/{method}?{urllib.parse.urlencode(params)}"
@@ -229,26 +245,18 @@ class KrakenFeed(Feed):
         return config.ASSETS[symbol]
 
     def _match(self, key: str) -> Optional[config.Asset]:
-        for a in config.CRYPTO_WATCHLIST:
-            if key in (a.exchange_pair, f"{a.base_asset}ZCAD", f"{a.base_asset}CAD"):
-                return a
-        return None
+        s = self.pairs.symbol_for(key)
+        return config.ASSETS.get(s) if s else None
 
     # ---- pair rules (order minimums)
     def load_pair_rules(self) -> Dict[str, Dict[str, float]]:
         for s in self.symbols:
             a = self._asset(s)
             self.pair_rules[s] = {"ordermin": a.ordermin_fallback, "lot_decimals": a.lot_decimals, "costmin": 1.0}
-        try:
-            res = self._get("AssetPairs", {"pair": ",".join(self._asset(s).exchange_pair for s in self.symbols)})
-        except (RuntimeError, urllib.error.URLError, OSError, KeyError, ValueError):
-            return self.pair_rules
-        for _k, info in res.items():
-            a = self._match(info.get("altname", ""))
-            if a and a.symbol in self.pair_rules:
-                self.pair_rules[a.symbol] = {"ordermin": float(info.get("ordermin", a.ordermin_fallback)),
-                                             "lot_decimals": int(info.get("lot_decimals", a.lot_decimals)),
-                                             "costmin": float(info.get("costmin", 1.0) or 1.0)}
+        if self._resolve():
+            for s, r in self.pairs.rules.items():
+                if s in self.pair_rules:
+                    self.pair_rules[s] = {"ordermin": r["ordermin"], "lot_decimals": r["lot_decimals"], "costmin": r["costmin"]}
         return self.pair_rules
 
     def min_qty(self, symbol: str) -> float:
@@ -270,16 +278,27 @@ class KrakenFeed(Feed):
         if symbol in self._hist and now - self._hist_ts.get(symbol, 0) < self.refresh_seconds:
             return
         try:
-            res = self._get("OHLC", {"pair": self._asset(symbol).exchange_pair, "interval": "1440"})
-            rows = next(v for k, v in res.items() if k != "last")
+            if not self._resolve():
+                self.pairs.resolve()                                       # re-raises the real network error
+            pair = self.pairs.pair(symbol)
+            if pair is None:
+                raise RuntimeError(f"kraken: {symbol} not listed ({self.pairs.unavailable.get(symbol, 'unresolved')})")
+            res = self._get("OHLC", {"pair": pair, "interval": "1440"})
+            mapped = self.pairs.map_response(res)
+            rows = mapped.get(symbol) or next(v for k, v in res.items() if k != "last")
             bars = self.parse_ohlc(symbol, rows)
             self._hist[symbol] = bars[:-1] if len(bars) > 1 else bars     # drop the in-progress candle
+            self.symbol_sources[symbol] = "kraken"
             self._set_source("kraken", "kraken reachable")
         except self.NET_ERRORS as e:
             if not self.allow_yahoo_fallback:
                 raise
             self._hist[symbol] = self._yahoo.history(symbol)              # raises if Yahoo is down too
-            self._set_source("yahoo", f"kraken unreachable: {e}")
+            self.symbol_sources[symbol] = "yahoo"
+            if symbol in self.pairs.unavailable:
+                pass                                                       # per-symbol fallback; Kraken itself is fine
+            else:
+                self._set_source("yahoo", f"kraken unreachable: {e}")
         self._hist_ts[symbol] = now
 
     def history(self, symbol: str) -> List[Bar]:
@@ -296,22 +315,30 @@ class KrakenFeed(Feed):
 
     # ---- quotes
     def _refresh_quotes(self) -> None:
-        pairs = ",".join(self._asset(s).exchange_pair for s in self.symbols)
         now = time.time()
+        kraken_symbols: List[str] = []
         try:
-            res = self._get("Ticker", {"pair": pairs})
-            for key, t in res.items():
-                a = self._match(key)
-                if a is not None:
-                    self._quotes[a.symbol] = Quote(a.symbol, float(t["b"][0]), float(t["a"][0]), float(t["c"][0]), now)
-            self._set_source("kraken", "kraken reachable")
+            if not self._resolve():
+                raise RuntimeError("kraken: pair resolution failed (network)")
+            kraken_symbols = self.pairs.available()
+            if kraken_symbols:
+                res = self._get("Ticker", {"pair": self.pairs.query_value(kraken_symbols)})
+                for s, t in self.pairs.map_response(res).items():
+                    self._quotes[s] = Quote(s, float(t["b"][0]), float(t["a"][0]), float(t["c"][0]), now)
+                    self.symbol_sources[s] = "kraken"
+                self._set_source("kraken", "kraken reachable")
+            missing = [s for s in self.symbols if s not in kraken_symbols or s not in self._quotes]
         except self.NET_ERRORS as e:
             if not self.allow_yahoo_fallback:
                 raise
-            # Yahoo has no order book: quote = last price +/- half the pair's typical Kraken spread
-            for s in self.symbols:
-                self._quotes[s] = self._yahoo.quote(s)
+            missing = list(self.symbols)
             self._set_source("yahoo", f"kraken unreachable: {e}")
+        # Yahoo has no order book: quote = last price +/- half the pair's typical Kraken spread
+        for s in missing:
+            if not self.allow_yahoo_fallback:
+                raise RuntimeError(f"kraken: no quote for {s}")
+            self._quotes[s] = self._yahoo.quote(s)
+            self.symbol_sources[s] = "yahoo"
         self._quotes_ts = now
 
     def quote(self, symbol: str) -> Quote:

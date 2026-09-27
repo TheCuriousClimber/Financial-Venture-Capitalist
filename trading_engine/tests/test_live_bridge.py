@@ -222,6 +222,87 @@ class TestKrakenFeed(unittest.TestCase):
             strict.history("BTC/CAD")
 
 
+    def test_unknown_pair_does_not_break_batch_and_legacy_keys_map_back(self):
+        """Railway incident: one unlisted pair made the batched Ticker/OHLC call fail with
+        EQuery:Unknown asset pair and dropped the whole universe to Yahoo."""
+        calls: List[dict] = []
+        changes: List[tuple] = []
+        now = int(__import__("time").time())
+        ts = [now - 86400 * (5 - i) for i in range(6)]
+        listed = {"XBTCAD": ("XXBTZCAD", "XBT/CAD"), "ETHCAD": ("XETHZCAD", "ETH/CAD"), "SOLCAD": ("SOLCAD", "SOL/CAD")}
+        tick = {"XXBTZCAD": {"a": ["140010.0", "1", "1"], "b": ["139990.0", "1", "1"], "c": ["140000.0", "0.1"]},
+                "XETHZCAD": {"a": ["4501.0", "1", "1"], "b": ["4499.0", "1", "1"], "c": ["4500.0", "1"]},
+                "SOLCAD": {"a": ["221.5", "1", "1"], "b": ["221.3", "1", "1"], "c": ["221.4", "1"]}}
+
+        def _open(req, timeout=None):
+            url = req.full_url
+            calls.append(url)
+            q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+            if "api.kraken.com" in url:
+                if "AssetPairs" in url:
+                    alias = q["pair"]
+                    if alias not in listed:
+                        return FakeResponse(json.dumps({"error": ["EQuery:Unknown asset pair"], "result": {}}).encode())
+                    key, ws = listed[alias]
+                    return FakeResponse(json.dumps({"error": [], "result": {key: {"altname": alias, "wsname": ws, "ordermin": "0.02",
+                                                                                    "lot_decimals": 8, "pair_decimals": 1}}}).encode())
+                if "Ticker" in url:
+                    asked = q["pair"].split(",")
+                    self.assertTrue(all(a in listed for a in asked), asked)     # unknown pairs never sent
+                    return FakeResponse(json.dumps({"error": [], "result": {listed[a][0]: tick[listed[a][0]] for a in asked}}).encode())
+                if "OHLC" in url:
+                    self.assertIn(q["pair"], listed)
+                    rows = [[t, "100", "101", "99", "100", "100", "5", 1] for t in ts]
+                    return FakeResponse(json.dumps({"error": [], "result": {listed[q["pair"]][0]: rows, "last": ts[-1]}}).encode())
+            if "finance.yahoo.com" in url:
+                closes = [1.0] * 6
+                return FakeResponse(json.dumps({"chart": {"result": [{"timestamp": ts, "indicators": {"quote": [{
+                    "open": closes, "high": closes, "low": closes, "close": closes, "volume": [1] * 6}]}}]}}).encode())
+            raise AssertionError(url)
+
+        feed = KrakenFeed(symbols=["BTC/CAD", "ETH/CAD", "SOL/CAD", "XRP/CAD"], opener=_open,
+                          on_source_change=lambda s, r: changes.append((s, r)))
+        q = feed.quote("BTC/CAD")
+        self.assertAlmostEqual(q.ask, 140010.0)                                  # XXBTZCAD key -> BTC/CAD
+        self.assertAlmostEqual(feed.quote("ETH/CAD").last, 4500.0)               # XETHZCAD key -> ETH/CAD
+        self.assertEqual(feed.pairs.pair("BTC/CAD"), "XBTCAD")
+        self.assertIn("XRP/CAD", feed.pairs.unavailable)
+        self.assertEqual(feed.source, "kraken")                                   # universe stays on Kraken
+        self.assertEqual(feed.symbol_sources["XRP/CAD"], "yahoo")                  # only the unlisted pair falls back
+        self.assertEqual(feed.symbol_sources["SOL/CAD"], "kraken")
+        self.assertEqual(len(feed.history("ETH/CAD")), 5)
+        self.assertEqual(feed.history("ETH/CAD")[-1].symbol, "ETH/CAD")
+        self.assertEqual(feed.min_qty("SOL/CAD"), 0.02)
+        self.assertTrue(any("XRP/CAD" in r for _s, r in changes))
+        self.assertEqual(sum("Ticker" in u for u in calls), 1)                    # one batched call served all quotes
+
+    def test_broker_maps_legacy_keys_and_refuses_unlisted_pairs(self):
+        calls: List[dict] = []
+
+        def router(url, form):
+            q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+            if "AssetPairs" in url:
+                if q["pair"] == "XBTCAD":
+                    return {"error": [], "result": {"XXBTZCAD": {"altname": "XBTCAD", "wsname": "XBT/CAD", "ordermin": "0.00005", "lot_decimals": 8, "pair_decimals": 1}}}
+                if q["pair"] == "SOLCAD":
+                    return {"error": [], "result": {"SOLCAD": {"altname": "SOLCAD", "wsname": "SOL/CAD", "ordermin": "0.02", "lot_decimals": 8, "pair_decimals": 3}}}
+                return {"error": ["EQuery:Unknown asset pair"], "result": {}}
+            if "Ticker" in url:
+                return {"error": [], "result": {"XXBTZCAD": {"a": ["140010.0", "1", "1"], "b": ["139990.0", "1", "1"], "c": ["140000.0", "0.01"]}}}
+            return {"error": ["EGeneral:Unknown method"], "result": {}}
+
+        b = KrakenBroker(api_key="k", private_key="a2V5a2V5", enabled=True, opener=fake_opener(router, calls))
+        rules = b.load_pair_rules()
+        self.assertEqual(rules["BTC/CAD"]["source"], "exchange")
+        self.assertEqual(rules["DOGE/CAD"]["source"], "fallback")
+        self.assertEqual(b.get_quote("BTC/CAD").bid, 139990.0)
+        with self.assertRaises(BrokerError):
+            b.get_quotes(["BTC/CAD", "DOGE/CAD"])                                  # unlisted -> explicit error, no request
+        with self.assertRaises(BrokerError):
+            b.submit_order(Order("DOGE/CAD", "BUY", 50))
+        self.assertFalse(any("AddOrder" in c["url"] for c in calls))
+
+
 # ------------------------------------------------------------------- webhook
 class TestWebhookNotifier(unittest.TestCase):
     def capture(self, url, chat_id="", fail=False):
