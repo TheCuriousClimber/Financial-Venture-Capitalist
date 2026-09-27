@@ -80,3 +80,30 @@ class WebhookNotifier:
 
     def notify_alert(self, kind: str, message: str, data: Optional[Dict[str, Any]] = None) -> bool:
         return self.send(f"Alert: {kind}", message, data)
+
+
+def main(argv=None) -> int:
+    """One-off delivery check:  python3 -m trading_engine.notifications --test [message]
+    Uses WEBHOOK_URL / TELEGRAM_CHAT_ID from the environment or trading_engine/.env. Exit 0 = the endpoint
+    returned 2xx, 1 = delivery failed, 2 = no WEBHOOK_URL configured."""
+    import argparse
+    import sys
+
+    ap = argparse.ArgumentParser(description="send a test alert through the configured webhook")
+    ap.add_argument("--test", nargs="?", const="🚀 Engine Dispatch: Webhook integration verified!", default=None,
+                    metavar="MESSAGE")
+    args = ap.parse_args(argv)
+    if args.test is None:
+        ap.print_help()
+        return 2
+    n = WebhookNotifier(url=config.WEBHOOK_URL, telegram_chat_id=config.TELEGRAM_CHAT_ID)   # read at call time
+    if not n.enabled:
+        print("WEBHOOK_URL is not set; nothing sent", file=sys.stderr)
+        return 2
+    ok = n.send("Engine Dispatch", args.test, {"purpose": "webhook_test"})
+    print(f"{'delivered' if ok else 'FAILED'} via {n.kind} ({n.url.split('/')[2]})")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
