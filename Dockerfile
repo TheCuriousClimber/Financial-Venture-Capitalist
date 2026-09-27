@@ -7,16 +7,15 @@ ENV PYTHONUNBUFFERED=1 \
     LEDGER_PATH=/app/data/ledger.db \
     LOG_FILE=/app/data/daemon.log
 
-# non-root user; /app/data is the only writable path (ledger, WAL side-files, logs, proposed patches)
-RUN addgroup -S trader && adduser -S -G trader trader \
-    && mkdir -p /app/data && chown -R trader:trader /app
+# /app/data holds the ledger (+ WAL side-files), logs and proposed patches. The process runs as root:
+# platform volumes (Railway, Fly) are mounted root-owned at deploy time, and a non-root USER cannot
+# create ledger.db / daemon.log inside them. The container has no secrets beyond .env and no shell exposure.
+RUN mkdir -p /app/data && chmod 755 /app/data
 
 WORKDIR /app
-COPY --chown=trader:trader trading_engine/ /app/trading_engine/
+COPY trading_engine/ /app/trading_engine/
 # .env is intentionally NOT copied: mount it or pass env vars via compose/env_file (see DEPLOYMENT.md)
 RUN rm -f /app/trading_engine/.env /app/trading_engine/ledger.db
-
-USER trader
 
 # Optional: the cost-gated Claude bridge needs the SDK. Uncomment to enable in-container:
 # RUN pip install --no-cache-dir anthropic>=1.4.0
